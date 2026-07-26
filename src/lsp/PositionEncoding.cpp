@@ -269,6 +269,78 @@ Json PositionEncoding::baaDiagnosticsToLsp(std::string_view text, const Json &di
         Json data = Json::object();
         if (item.contains("category")) data["category"] = item["category"];
         if (item.contains("hint") and not item["hint"].is_null()) data["hint"] = item["hint"];
+        Json convertedFixes = Json::array();
+        const Json fixes = item.value("fixes", Json::array());
+        if (fixes.is_array()) {
+            for (const Json &fix : fixes) {
+                if (not fix.is_object() or
+                    fix.value("kind", "") != "quickfix" or
+                    fix.value("applicability", "") != "safe" or
+                    fix.value("title", "").empty()) continue;
+                const Json rawEdits = fix.value("edits", Json::array());
+                if (not rawEdits.is_array() or rawEdits.empty()) continue;
+
+                Json edits = Json::array();
+                bool valid = true;
+                for (const Json &rawEdit : rawEdits) {
+                    if (not rawEdit.is_object() or
+                        not rawEdit.contains("new_text") or
+                        not rawEdit["new_text"].is_string()) {
+                        valid = false;
+                        break;
+                    }
+                    const Json editSpan = rawEdit.value("span", Json::object());
+                    const Json editStart = editSpan.value("start", Json::object());
+                    const Json editEnd = editSpan.value("end", Json::object());
+                    const std::int64_t editStartByte =
+                        integerValue(editStart, "byte", -1);
+                    const std::int64_t editEndByte =
+                        integerValue(editEnd, "byte", -1);
+                    if (editStartByte < 0 or editEndByte < editStartByte or
+                        static_cast<std::size_t>(editEndByte) > text.size()) {
+                        valid = false;
+                        break;
+                    }
+                    const Json startPosition = utf16PositionForByteOffset(
+                        text, static_cast<std::size_t>(editStartByte));
+                    const Json endPosition = utf16PositionForByteOffset(
+                        text, static_cast<std::size_t>(editEndByte));
+                    if (utf8ByteOffsetForUtf16Position(
+                            text,
+                            startPosition.value("line", -1),
+                            startPosition.value("character", -1)) !=
+                            static_cast<std::size_t>(editStartByte) or
+                        utf8ByteOffsetForUtf16Position(
+                            text,
+                            endPosition.value("line", -1),
+                            endPosition.value("character", -1)) !=
+                            static_cast<std::size_t>(editEndByte)) {
+                        valid = false;
+                        break;
+                    }
+                    Json edit{
+                        {"file", rawEdit.value("file", "")},
+                        {"range", {
+                            {"start", startPosition},
+                            {"end", endPosition}
+                        }},
+                        {"newText", rawEdit["new_text"]}
+                    };
+                    edits.push_back(std::move(edit));
+                }
+                if (not valid or edits.empty()) continue;
+
+                Json convertedFix{
+                    {"id", fix.value("id", "")},
+                    {"title", fix["title"]},
+                    {"kind", "quickfix"},
+                    {"applicability", "safe"},
+                    {"edits", std::move(edits)}
+                };
+                convertedFixes.push_back(std::move(convertedFix));
+            }
+        }
+        if (not convertedFixes.empty()) data["fixes"] = std::move(convertedFixes);
         if (not data.empty()) result["data"] = std::move(data);
         converted.push_back(std::move(result));
     }

@@ -48,6 +48,7 @@ private:
     void handleDidClose(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
+    void handleCodeAction(const Json &id, const Json &params);
     void handleSemanticRequest(const Json &id,
                                const Json &params,
                                SemanticReplyKind kind);
@@ -77,6 +78,13 @@ private:
     std::mutex m_documentsMutex;
     DocumentStore m_documents;
     BaaCompilerBridge m_compiler;
+    struct PublishedDiagnostics
+    {
+        int version{};
+        Json diagnostics = Json::array();
+    };
+    std::mutex m_diagnosticsMutex;
+    std::unordered_map<std::string, PublishedDiagnostics> m_publishedDiagnostics;
     struct PendingSymbolRequest
     {
         std::vector<Json> ids;

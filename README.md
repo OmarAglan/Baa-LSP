@@ -57,6 +57,10 @@ Qalam or another LSP client
   deduplicated workspace edits for compiler-resolved occurrences. Rename accepts
   Arabic identifiers only and refuses reserved words, compiler-indexed
   collisions, stale documents, or an incomplete project index.
+- `textDocument/codeAction` exposes only compiler-owned, explicitly safe quick
+  fixes carried by `diagnostics-json-v1`. The server converts exact byte spans,
+  binds edits to the current document version, and rejects stale, destructive,
+  duplicate, or out-of-document changes without parsing diagnostic messages.
 
 ## Build
 

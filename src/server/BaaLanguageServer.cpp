@@ -118,6 +118,42 @@ std::string comparablePath(std::filesystem::path path)
     return value;
 }
 
+std::optional<std::size_t> lspByteOffset(std::string_view text,
+                                         const Json &position)
+{
+    if (not position.is_object()) return std::nullopt;
+    const auto lineIt = position.find("line");
+    const auto characterIt = position.find("character");
+    if (lineIt == position.end() or characterIt == position.end() or
+        not lineIt->is_number_integer() or
+        not characterIt->is_number_integer()) return std::nullopt;
+    const int line = lineIt->get<int>();
+    const int character = characterIt->get<int>();
+    if (line < 0 or character < 0) return std::nullopt;
+    const std::size_t offset =
+        PositionEncoding::utf8ByteOffsetForUtf16Position(text, line, character);
+    const Json canonical{{"line", line}, {"character", character}};
+    if (PositionEncoding::utf16PositionForByteOffset(text, offset) != canonical)
+        return std::nullopt;
+    return offset;
+}
+
+std::optional<std::pair<std::size_t, std::size_t>>
+lspByteRange(std::string_view text, const Json &range)
+{
+    if (not range.is_object()) return std::nullopt;
+    const auto start = lspByteOffset(text, objectValue(range, "start"));
+    const auto end = lspByteOffset(text, objectValue(range, "end"));
+    if (not start or not end or *end < *start) return std::nullopt;
+    return std::pair{*start, *end};
+}
+
+bool lspRangesIntersect(const std::pair<std::size_t, std::size_t> &left,
+                        const std::pair<std::size_t, std::size_t> &right)
+{
+    return left.first <= right.second and right.first <= left.second;
+}
+
 std::string percentEncodedPath(std::string_view value)
 {
     constexpr char hex[] = "0123456789ABCDEF";
@@ -662,6 +698,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
                 {"hoverProvider", true},
                 {"definitionProvider", true},
                 {"referencesProvider", true},
+                {"codeActionProvider", {
+                    {"codeActionKinds", Json::array({"quickfix"})},
+                    {"resolveProvider", false}
+                }},
                 {"renameProvider", {{"prepareProvider", true}}},
                 {"signatureHelpProvider", {
                     {"triggerCharacters", Json::array({"(", "،", ","})},
@@ -733,6 +773,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     if (method == "textDocument/references") {
         handleSemanticRequest(
             id, objectValue(message, "params"), SemanticReplyKind::References);
+        return;
+    }
+    if (method == "textDocument/codeAction") {
+        handleCodeAction(id, objectValue(message, "params"));
         return;
     }
     if (method == "textDocument/prepareRename") {
@@ -1038,6 +1082,152 @@ void BaaLanguageServer::completeRequest(const Json &id,
         {"items", buildCompletionItems(document.text, prefixStart, cursor,
                                        metadata, symbols)}
     });
+}
+
+void BaaLanguageServer::handleCodeAction(const Json &id, const Json &params)
+{
+    const std::string uri = stringValue(objectValue(params, "textDocument"), "uri");
+    const Json requestedRange = objectValue(params, "range");
+    if (uri.empty() or not requestedRange.contains("start") or
+        not requestedRange.contains("end")) {
+        sendError(id, InvalidParams,
+                  "textDocument.uri and a UTF-16 range are required.");
+        return;
+    }
+
+    const Json only = objectValue(params, "context").value(
+        "only", Json::array());
+    if (only.is_array() and not only.empty()) {
+        bool acceptsQuickFix = false;
+        for (const Json &kind : only) {
+            if (kind.is_string() and kind.get<std::string>() == "quickfix") {
+                acceptsQuickFix = true;
+                break;
+            }
+        }
+        if (not acceptsQuickFix) {
+            sendResult(id, Json::array());
+            return;
+        }
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(uri)) {
+            sendError(id, InvalidParams, "Document is not open in Baa-LSP.");
+            return;
+        }
+        document = m_documents.document(uri);
+    }
+    const auto selection = lspByteRange(document.text, requestedRange);
+    if (not selection) {
+        sendError(id, InvalidParams,
+                  "Code-action range is outside the current UTF-16 document.");
+        return;
+    }
+
+    PublishedDiagnostics published;
+    {
+        std::scoped_lock lock(m_diagnosticsMutex);
+        const auto it = m_publishedDiagnostics.find(uri);
+        if (it == m_publishedDiagnostics.end() or
+            it->second.version != document.version) {
+            sendResult(id, Json::array());
+            return;
+        }
+        published = it->second;
+    }
+
+    Json matching = Json::array();
+    for (const Json &diagnostic : published.diagnostics) {
+        if (not diagnostic.is_object()) continue;
+        const Json data = objectValue(diagnostic, "data");
+        const Json fixes = data.value("fixes", Json::array());
+        if (not fixes.is_array() or fixes.empty()) continue;
+        const auto diagnosticRange =
+            lspByteRange(document.text, objectValue(diagnostic, "range"));
+        if (diagnosticRange and lspRangesIntersect(*selection, *diagnosticRange))
+            matching.push_back(diagnostic);
+    }
+
+    const std::string currentPath = localPathForUri(uri);
+    const std::string currentComparable = currentPath.empty()
+        ? std::string{}
+        : comparablePath(pathFromUtf8(currentPath));
+    Json actions = Json::array();
+    std::unordered_set<std::string> seen;
+    for (const Json &diagnostic : matching) {
+        const Json fixes = objectValue(diagnostic, "data").value(
+            "fixes", Json::array());
+        for (const Json &fix : fixes) {
+            if (not fix.is_object() or
+                stringValue(fix, "kind") != "quickfix" or
+                stringValue(fix, "applicability") != "safe") continue;
+            const std::string title = stringValue(fix, "title");
+            const Json rawEdits = fix.value("edits", Json::array());
+            if (title.empty() or not rawEdits.is_array() or rawEdits.empty())
+                continue;
+
+            Json edits = Json::array();
+            std::vector<std::size_t> insertionOffsets;
+            bool valid = not currentComparable.empty();
+            for (const Json &rawEdit : rawEdits) {
+                const std::string editFile = stringValue(rawEdit, "file");
+                std::filesystem::path editPath = pathFromUtf8(editFile);
+                if (editPath.is_relative()) {
+                    editPath =
+                        pathFromUtf8(currentPath).parent_path() / editPath;
+                }
+                const auto editRange = lspByteRange(
+                    document.text, objectValue(rawEdit, "range"));
+                const auto newText = rawEdit.find("newText");
+                if (editFile.empty() or not editRange or
+                    comparablePath(std::move(editPath)) != currentComparable or
+                    newText == rawEdit.end() or not newText->is_string() or
+                    newText->get_ref<const std::string &>().empty() or
+                    editRange->first != editRange->second) {
+                    valid = false;
+                    break;
+                }
+                insertionOffsets.push_back(editRange->first);
+                edits.push_back({
+                    {"range", rawEdit["range"]},
+                    {"newText", *newText}
+                });
+            }
+            std::ranges::sort(insertionOffsets);
+            if (std::adjacent_find(insertionOffsets.begin(),
+                                   insertionOffsets.end()) !=
+                insertionOffsets.end()) valid = false;
+            if (not valid or edits.empty()) continue;
+
+            const std::string key =
+                stringValue(fix, "id") + "|" + edits.dump();
+            if (not seen.insert(key).second) continue;
+            Json action{
+                {"title", title},
+                {"kind", "quickfix"},
+                {"diagnostics", Json::array({diagnostic})},
+                {"isPreferred", true},
+                {"edit", {
+                    {"documentChanges", Json::array({
+                        {
+                            {"textDocument", {
+                                {"uri", uri},
+                                {"version", document.version}
+                            }},
+                            {"edits", std::move(edits)}
+                        }
+                    })}
+                }}
+            };
+            const std::string fixId = stringValue(fix, "id");
+            if (not fixId.empty()) action["data"] = {{"fixId", fixId}};
+            actions.push_back(std::move(action));
+        }
+    }
+    sendResult(id, actions);
 }
 
 void BaaLanguageServer::handleSemanticRequest(const Json &id,
@@ -1758,6 +1948,10 @@ void BaaLanguageServer::publishDiagnostics(const std::string &uri,
                                            int version,
                                            const Json &diagnostics)
 {
+    {
+        std::scoped_lock lock(m_diagnosticsMutex);
+        m_publishedDiagnostics[uri] = {version, diagnostics};
+    }
     Json params{{"uri", uri}, {"diagnostics", diagnostics}};
     if (version > 0) params["version"] = version;
     sendJson({{"jsonrpc", "2.0"},

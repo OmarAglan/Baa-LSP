@@ -23,9 +23,24 @@ int main()
     const std::string source = "صحيح الرئيسية() {\n    مفقود = ١.\n}\n";
     const std::size_t start = source.find("مفقود");
     const std::size_t end = start + std::string("مفقود").size();
+    const std::size_t insertion = source.find("}");
     const Json diagnostics = Json::array({{
         {"code", "E100"}, {"severity", "error"}, {"message", "رمز مفقود"},
-        {"span", {{"start", {{"byte", start}}}, {"end", {{"byte", end}}}}}
+        {"span", {{"start", {{"byte", start}}}, {"end", {{"byte", end}}}}},
+        {"fixes", Json::array({{
+            {"id", "B0001.insert-dot"},
+            {"title", "أضف '.'"},
+            {"kind", "quickfix"},
+            {"applicability", "safe"},
+            {"edits", Json::array({{
+                {"file", "رئيسي.baa"},
+                {"span", {
+                    {"start", {{"byte", insertion}}},
+                    {"end", {{"byte", insertion}}}
+                }},
+                {"new_text", "."}
+            }})}
+        }})}
     }});
     const Json converted = PositionEncoding::baaDiagnosticsToLsp(source, diagnostics);
     CHECK(converted.size() == 1);
@@ -33,6 +48,22 @@ int main()
     CHECK(converted[0]["severity"] == 1);
     CHECK(converted[0]["range"]["start"]["line"] == 1);
     CHECK(converted[0]["range"]["start"]["character"] == 4);
+    CHECK(converted[0]["data"]["fixes"].size() == 1);
+    CHECK(converted[0]["data"]["fixes"][0]["title"] == "أضف '.'");
+    CHECK(converted[0]["data"]["fixes"][0]["edits"][0]["range"]["start"] ==
+          converted[0]["data"]["fixes"][0]["edits"][0]["range"]["end"]);
+    CHECK(converted[0]["data"]["fixes"][0]["edits"][0]["range"]["start"]["line"] == 2);
+    CHECK(converted[0]["data"]["fixes"][0]["edits"][0]["newText"] == ".");
+
+    Json invalidBoundaryDiagnostics = diagnostics;
+    invalidBoundaryDiagnostics[0]["fixes"][0]["edits"][0]["span"]["start"]["byte"] =
+        start + 1;
+    invalidBoundaryDiagnostics[0]["fixes"][0]["edits"][0]["span"]["end"]["byte"] =
+        start + 1;
+    const Json invalidBoundaryConverted =
+        PositionEncoding::baaDiagnosticsToLsp(source, invalidBoundaryDiagnostics);
+    CHECK(not invalidBoundaryConverted[0].contains("data") or
+          not invalidBoundaryConverted[0]["data"].contains("fixes"));
 
     const std::string symbolSource = "صحيح اجمع(صحيح أ، صحيح ب) {}\n";
     const std::size_t functionStart = symbolSource.find("اجمع");

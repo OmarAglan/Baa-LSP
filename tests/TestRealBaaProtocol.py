@@ -212,6 +212,51 @@ def main():
             comparable_uri(uri), comparable_uri(header.resolve().as_uri())
         }
 
+        missing_dot_source = (
+            "صحيح الرئيسية() {\n"
+            "    إرجع ٠\n"
+            "}\n"
+        )
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 3},
+                "contentChanges": [{"text": missing_dot_source}],
+            },
+        })
+        fix_diagnostics = read_message(process)
+        assert fix_diagnostics["method"] == "textDocument/publishDiagnostics"
+        assert fix_diagnostics["params"]["version"] == 3
+        diagnostic = fix_diagnostics["params"]["diagnostics"][0]
+        assert diagnostic["code"] == "B0001"
+        assert diagnostic["data"]["fixes"][0]["id"] == "B0001.insert-dot"
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 11,
+            "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": diagnostic["range"],
+                "context": {
+                    "diagnostics": [diagnostic],
+                    "only": ["quickfix"],
+                },
+            },
+        })
+        actions = read_response(process, 11)["result"]
+        assert len(actions) == 1
+        assert actions[0]["title"] == "أضف '.'"
+        assert actions[0]["isPreferred"] is True
+        document_change = actions[0]["edit"]["documentChanges"][0]
+        assert document_change["textDocument"] == {"uri": uri, "version": 3}
+        assert document_change["edits"] == [{
+            "range": {
+                "start": {"line": 2, "character": 0},
+                "end": {"line": 2, "character": 0},
+            },
+            "newText": ".",
+        }]
+
         send_message(process, {
             "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": None,
         })

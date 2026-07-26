@@ -60,6 +60,10 @@ def main():
         assert response["result"]["capabilities"]["hoverProvider"] is True
         assert response["result"]["capabilities"]["definitionProvider"] is True
         assert response["result"]["capabilities"]["referencesProvider"] is True
+        assert response["result"]["capabilities"]["codeActionProvider"] == {
+            "codeActionKinds": ["quickfix"],
+            "resolveProvider": False,
+        }
         assert response["result"]["capabilities"]["renameProvider"] == {
             "prepareProvider": True
         }
@@ -84,6 +88,51 @@ def main():
         item = diagnostics["params"]["diagnostics"][0]
         assert item["source"] == "باء"
         assert item["range"]["start"] == {"line": 1, "character": 4}
+        assert item["data"]["fixes"][0]["title"] == "عرّف المتغير بإضافة نوعه"
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 14, "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": item["range"],
+                "context": {
+                    "diagnostics": [item],
+                    "only": ["quickfix"],
+                },
+            },
+        })
+        actions = read_response(process, 14)["result"]
+        assert len(actions) == 1
+        action = actions[0]
+        assert action["title"] == "عرّف المتغير بإضافة نوعه"
+        assert action["kind"] == "quickfix"
+        assert action["isPreferred"] is True
+        assert action["data"]["fixId"] == "E100.insert-int-type"
+        change = action["edit"]["documentChanges"][0]
+        assert change["textDocument"] == {"uri": uri, "version": 1}
+        assert change["edits"] == [{
+            "range": {
+                "start": {"line": 1, "character": 4},
+                "end": {"line": 1, "character": 4},
+            },
+            "newText": "صحيح ",
+        }]
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 15, "method": "textDocument/codeAction",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 0, "character": 0},
+                },
+                "context": {
+                    "diagnostics": [],
+                    "only": ["quickfix"],
+                },
+            },
+        })
+        assert read_response(process, 15)["result"] == []
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",

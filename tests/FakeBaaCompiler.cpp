@@ -205,7 +205,21 @@ int main(int argc, char **argv)
             {"span", {
                 {"start", {{"line", 2}, {"column", 5}, {"byte", start}}},
                 {"end", {{"line", 2}, {"column", 10}, {"byte", start + token.size()}}}
-            }}
+            }},
+            {"fixes", Json::array({{
+                {"id", "E100.insert-int-type"},
+                {"title", "عرّف المتغير بإضافة نوعه"},
+                {"kind", "quickfix"},
+                {"applicability", "safe"},
+                {"edits", Json::array({{
+                    {"file", logicalFile},
+                    {"span", {
+                        {"start", {{"line", 2}, {"column", 5}, {"byte", start}}},
+                        {"end", {{"line", 2}, {"column", 5}, {"byte", start}}}
+                    }},
+                    {"new_text", "صحيح "}
+                }})}
+            }})}
         });
     }
     std::cout << Json{{"schema_version", "diagnostics-json-v1"},

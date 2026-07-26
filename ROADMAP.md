@@ -33,7 +33,7 @@
   without duplicating Baa semantics.
 - [x] Collision-checked Arabic rename with versioned workspace edits,
   incomplete-index refusal, and exact compiler-owned occurrences.
-- [ ] Code actions driven by stable diagnostic codes and structured edits.
+- [x] Code actions driven by stable diagnostic codes and structured edits.
 - [ ] Document formatting after Baa owns a stable formatting contract.
 
 ## 0.4 — Production admission
