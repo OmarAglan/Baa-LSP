@@ -18,7 +18,7 @@ Qalam or another LSP client
         Baa-LSP
           ↕ compiler-cli-v1 + diagnostics-json-v1 + symbols-json-v1
             + completion-data-json-v1 + semantic-query-json-v1
-            + semantic-index-json-v1
+            + semantic-index-json-v1 + format-json-v1
           Baa
         ↕ takween-build-plan-v1
        Takween
@@ -61,6 +61,10 @@ Qalam or another LSP client
   fixes carried by `diagnostics-json-v1`. The server converts exact byte spans,
   binds edits to the current document version, and rejects stale, destructive,
   duplicate, or out-of-document changes without parsing diagnostic messages.
+- `textDocument/formatting` asks Baa for `format-json-v1`, rejects stale or
+  cancelled work, and returns either no edits for canonical input or one exact
+  full-document UTF-16 replacement. The server does not own formatting rules
+  and never falls back to an editor-side formatter.
 
 ## Build
 

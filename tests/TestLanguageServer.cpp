@@ -27,6 +27,7 @@ int main()
     CHECK(messages[0]["result"]["capabilities"]["hoverProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["definitionProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["referencesProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["documentFormattingProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["renameProvider"]["prepareProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"].contains("signatureHelpProvider"));
     CHECK(messages[0]["result"]["capabilities"].contains("completionProvider"));

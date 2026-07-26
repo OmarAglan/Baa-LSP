@@ -257,6 +257,36 @@ def main():
             "newText": ".",
         }]
 
+        messy_source = "صحيح الرئيسية(){إرجع ٠.}\n"
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 4},
+                "contentChanges": [{"text": messy_source}],
+            },
+        })
+        formatted_diagnostics = read_message(process)
+        assert formatted_diagnostics["method"] == "textDocument/publishDiagnostics"
+        assert formatted_diagnostics["params"]["version"] == 4
+        assert formatted_diagnostics["params"]["diagnostics"] == []
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 12,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 2, "insertSpaces": False},
+            },
+        })
+        formatting = read_response(process, 12)["result"]
+        assert formatting == [{
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 1, "character": 0},
+            },
+            "newText": "صحيح الرئيسية() {\n    إرجع ٠.\n}\n",
+        }]
+
         send_message(process, {
             "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": None,
         })

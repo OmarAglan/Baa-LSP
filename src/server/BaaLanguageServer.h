@@ -49,6 +49,7 @@ private:
     void handleDocumentSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
     void handleCodeAction(const Json &id, const Json &params);
+    void handleDocumentFormatting(const Json &id, const Json &params);
     void handleSemanticRequest(const Json &id,
                                const Json &params,
                                SemanticReplyKind kind);
@@ -59,6 +60,7 @@ private:
     void onAnalysisFinished(BaaAnalysisResult result);
     void onSymbolsFinished(BaaSymbolResult result);
     void onCompletionDataFinished(BaaCompletionDataResult result);
+    void onFormatFinished(BaaFormatResult result);
     void onSemanticFinished(BaaSemanticResult result);
     void requestSymbolsForDocument(const BaaDocument &document, const Json *requestId);
     void completeRequest(const Json &id, const std::string &uri, int version,
@@ -67,6 +69,8 @@ private:
                                   const std::string &message);
     void invalidateCompletionRequests(const std::string &uri, int code,
                                       const std::string &message);
+    void invalidateFormatRequests(const std::string &uri, int code,
+                                  const std::string &message);
     void invalidateSemanticRequests(const std::string &uri, int code,
                                     const std::string &message);
     void publishDiagnostics(const std::string &uri, int version, const Json &diagnostics);
@@ -115,6 +119,15 @@ private:
     Json m_completionItems = Json::array();
     std::string m_completionDataError;
     std::vector<PendingCompletionRequest> m_pendingCompletionRequests;
+    struct PendingFormatRequest
+    {
+        Json id;
+        std::string uri;
+        int version{};
+    };
+    std::mutex m_formatMutex;
+    std::unordered_map<std::uint64_t, PendingFormatRequest> m_formatRequests;
+    std::uint64_t m_nextFormatToken{1};
     struct PendingSemanticReply
     {
         Json id;

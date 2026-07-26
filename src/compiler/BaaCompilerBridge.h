@@ -66,6 +66,32 @@ struct BaaCompletionDataResult
     std::string errorMessage;
 };
 
+struct BaaFormatRequest
+{
+    std::uint64_t token{};
+    std::string uri;
+    std::string filePath;
+    std::string text;
+    int version{};
+
+    bool isValid() const
+    {
+        return token != 0 and not uri.empty() and not filePath.empty();
+    }
+};
+
+struct BaaFormatResult
+{
+    std::uint64_t token{};
+    std::string uri;
+    std::string text;
+    std::string formattedText;
+    int version{};
+    int exitCode{-1};
+    bool changed{};
+    std::string errorMessage;
+};
+
 struct BaaSemanticRequest
 {
     struct ProjectSource
@@ -116,6 +142,7 @@ public:
     using AnalysisCallback = std::function<void(BaaAnalysisResult)>;
     using SymbolCallback = std::function<void(BaaSymbolResult)>;
     using CompletionDataCallback = std::function<void(BaaCompletionDataResult)>;
+    using FormatCallback = std::function<void(BaaFormatResult)>;
     using SemanticCallback = std::function<void(BaaSemanticResult)>;
 
     BaaCompilerBridge();
@@ -130,12 +157,15 @@ public:
     void setAnalysisCallback(AnalysisCallback callback);
     void setSymbolCallback(SymbolCallback callback);
     void setCompletionDataCallback(CompletionDataCallback callback);
+    void setFormatCallback(FormatCallback callback);
     void setSemanticCallback(SemanticCallback callback);
     void schedule(BaaAnalysisRequest request);
     void requestSymbols(BaaSymbolRequest request);
     void requestCompletionData();
+    void requestFormat(BaaFormatRequest request);
     void requestSemantic(BaaSemanticRequest request);
     void cancelSymbols(std::uint64_t token);
+    void cancelFormat(std::uint64_t token);
     void cancelSemantic(std::uint64_t token);
     void cancel(const std::string &uri);
     void cancelAll();
@@ -151,18 +181,21 @@ private:
     std::chrono::milliseconds m_debounce{250};
     std::unordered_map<std::string, BaaAnalysisRequest> m_pending;
     std::deque<BaaSymbolRequest> m_pendingSymbols;
+    std::deque<BaaFormatRequest> m_pendingFormats;
     std::deque<BaaSemanticRequest> m_pendingSemantic;
     bool m_completionDataPending{};
     std::unordered_map<std::string, int> m_latestVersions;
     std::string m_activeUri;
     int m_activeVersion{};
     std::uint64_t m_activeSymbolToken{};
+    std::uint64_t m_activeFormatToken{};
     std::uint64_t m_activeSemanticToken{};
     bool m_completionDataActive{};
     std::uint64_t m_scheduleSerial{};
     AnalysisCallback m_callback;
     SymbolCallback m_symbolCallback;
     CompletionDataCallback m_completionDataCallback;
+    FormatCallback m_formatCallback;
     SemanticCallback m_semanticCallback;
     bool m_stopping{};
     ProcessRunner m_runner;

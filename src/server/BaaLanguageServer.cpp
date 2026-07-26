@@ -472,6 +472,8 @@ BaaLanguageServer::BaaLanguageServer()
         [this](BaaCompletionDataResult result) {
             onCompletionDataFinished(std::move(result));
         });
+    m_compiler.setFormatCallback(
+        [this](BaaFormatResult result) { onFormatFinished(std::move(result)); });
     m_compiler.setSemanticCallback(
         [this](BaaSemanticResult result) { onSemanticFinished(std::move(result)); });
 }
@@ -481,6 +483,7 @@ BaaLanguageServer::~BaaLanguageServer()
     m_compiler.setAnalysisCallback({});
     m_compiler.setSymbolCallback({});
     m_compiler.setCompletionDataCallback({});
+    m_compiler.setFormatCallback({});
     m_compiler.setSemanticCallback({});
     m_compiler.cancelAll();
 }
@@ -698,6 +701,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
                 {"hoverProvider", true},
                 {"definitionProvider", true},
                 {"referencesProvider", true},
+                {"documentFormattingProvider", true},
                 {"codeActionProvider", {
                     {"codeActionKinds", Json::array({"quickfix"})},
                     {"resolveProvider", false}
@@ -732,6 +736,8 @@ void BaaLanguageServer::handleRequest(const Json &message)
         invalidateSymbolRequests({}, RequestCancelled, "Request cancelled during shutdown.");
         invalidateCompletionRequests({}, RequestCancelled,
                                      "Request cancelled during shutdown.");
+        invalidateFormatRequests({}, RequestCancelled,
+                                 "Request cancelled during shutdown.");
         invalidateSemanticRequests({}, RequestCancelled,
                                    "Request cancelled during shutdown.");
         m_compiler.cancelAll();
@@ -777,6 +783,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/codeAction") {
         handleCodeAction(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "textDocument/formatting") {
+        handleDocumentFormatting(id, objectValue(message, "params"));
         return;
     }
     if (method == "textDocument/prepareRename") {
@@ -865,6 +875,8 @@ void BaaLanguageServer::handleDidChange(const Json &params)
                              "Document changed before symbols were ready.");
     invalidateCompletionRequests(uri, ContentModified,
                                  "Document changed before completion was ready.");
+    invalidateFormatRequests(uri, ContentModified,
+                             "Document changed before formatting was ready.");
     invalidateSemanticRequests(uri, ContentModified,
                                "Document changed before semantic data was ready.");
     {
@@ -899,6 +911,8 @@ void BaaLanguageServer::handleDidClose(const Json &params)
                              "Document closed before symbols were ready.");
     invalidateCompletionRequests(uri, ContentModified,
                                  "Document closed before completion was ready.");
+    invalidateFormatRequests(uri, ContentModified,
+                             "Document closed before formatting was ready.");
     invalidateSemanticRequests(uri, ContentModified,
                                "Document closed before semantic data was ready.");
     m_compiler.cancel(uri);
@@ -1230,6 +1244,53 @@ void BaaLanguageServer::handleCodeAction(const Json &id, const Json &params)
     sendResult(id, actions);
 }
 
+void BaaLanguageServer::handleDocumentFormatting(const Json &id,
+                                                 const Json &params)
+{
+    const std::string uri =
+        stringValue(objectValue(params, "textDocument"), "uri");
+    if (uri.empty()) {
+        sendError(id, InvalidParams, "textDocument.uri is required.");
+        return;
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(uri)) {
+            sendError(id, InvalidParams, "Document is not open in Baa-LSP.");
+            return;
+        }
+        document = m_documents.document(uri);
+    }
+    const std::string filePath = localPathForUri(uri);
+    if (filePath.empty()) {
+        sendError(id, InvalidParams,
+                  "Formatting supports local file:// documents only.");
+        return;
+    }
+
+    invalidateFormatRequests(
+        uri, RequestCancelled,
+        "A newer formatting request superseded this request.");
+    std::uint64_t token = 0;
+    {
+        std::scoped_lock lock(m_formatMutex);
+        token = m_nextFormatToken++;
+        if (token == 0) token = m_nextFormatToken++;
+        m_formatRequests.emplace(
+            token,
+            PendingFormatRequest{id, uri, document.version});
+    }
+    m_compiler.requestFormat({
+        token,
+        uri,
+        filePath,
+        document.text,
+        document.version
+    });
+}
+
 void BaaLanguageServer::handleSemanticRequest(const Json &id,
                                               const Json &params,
                                               SemanticReplyKind kind)
@@ -1420,6 +1481,20 @@ void BaaLanguageServer::handleCancelRequest(const Json &params)
             cancelled = true;
         }
     }
+    std::uint64_t formatTokenToCancel = 0;
+    if (not cancelled) {
+        std::scoped_lock lock(m_formatMutex);
+        for (auto request = m_formatRequests.begin();
+             request != m_formatRequests.end(); ++request) {
+            if (request->second.id != *idIt) continue;
+            formatTokenToCancel = request->first;
+            m_formatRequests.erase(request);
+            cancelled = true;
+            break;
+        }
+    }
+    if (formatTokenToCancel != 0)
+        m_compiler.cancelFormat(formatTokenToCancel);
     std::uint64_t semanticTokenToCancel = 0;
     if (not cancelled) {
         std::scoped_lock lock(m_semanticMutex);
@@ -1473,6 +1548,50 @@ void BaaLanguageServer::onAnalysisFinished(BaaAnalysisResult result)
     publishDiagnostics(result.uri, result.version,
                        PositionEncoding::baaDiagnosticsToLsp(result.text, result.diagnostics));
     if (result.exitCode == 0) requestSymbolsForDocument(document, nullptr);
+}
+
+void BaaLanguageServer::onFormatFinished(BaaFormatResult result)
+{
+    PendingFormatRequest pending;
+    {
+        std::scoped_lock lock(m_formatMutex);
+        const auto request = m_formatRequests.find(result.token);
+        if (request == m_formatRequests.end()) return;
+        pending = std::move(request->second);
+        m_formatRequests.erase(request);
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(pending.uri) or
+            m_documents.document(pending.uri).version != pending.version) {
+            sendError(pending.id, ContentModified,
+                      "Document changed before formatting was ready.");
+            return;
+        }
+        document = m_documents.document(pending.uri);
+    }
+    if (not result.errorMessage.empty()) {
+        sendError(pending.id, InternalError, result.errorMessage);
+        return;
+    }
+    if (not result.changed or result.formattedText == document.text) {
+        sendResult(pending.id, Json::array());
+        return;
+    }
+
+    const Json end = PositionEncoding::utf16PositionForByteOffset(
+        document.text, document.text.size());
+    sendResult(pending.id, Json::array({
+        {
+            {"range", {
+                {"start", {{"line", 0}, {"character", 0}}},
+                {"end", end}
+            }},
+            {"newText", result.formattedText}
+        }
+    }));
 }
 
 void BaaLanguageServer::onSymbolsFinished(BaaSymbolResult result)
@@ -1921,6 +2040,35 @@ void BaaLanguageServer::invalidateSemanticRequests(const std::string &uri,
         m_compiler.cancelSemantic(request.token);
         for (const PendingSemanticReply &reply : request.replies)
             sendError(reply.id, code, message);
+    }
+}
+
+void BaaLanguageServer::invalidateFormatRequests(const std::string &uri,
+                                                 int code,
+                                                 const std::string &message)
+{
+    struct CancelledRequest
+    {
+        std::uint64_t token{};
+        Json id;
+    };
+    std::vector<CancelledRequest> cancelled;
+    {
+        std::scoped_lock lock(m_formatMutex);
+        for (auto request = m_formatRequests.begin();
+             request != m_formatRequests.end();) {
+            if (uri.empty() or request->second.uri == uri) {
+                cancelled.push_back(
+                    {request->first, std::move(request->second.id)});
+                request = m_formatRequests.erase(request);
+            } else {
+                ++request;
+            }
+        }
+    }
+    for (const CancelledRequest &request : cancelled) {
+        m_compiler.cancelFormat(request.token);
+        sendError(request.id, code, message);
     }
 }
 

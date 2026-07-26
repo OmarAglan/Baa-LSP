@@ -40,12 +40,14 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_stopping = true;
         m_pending.clear();
         m_pendingSymbols.clear();
+        m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
         m_latestVersions.clear();
         m_callback = {};
         m_symbolCallback = {};
         m_completionDataCallback = {};
+        m_formatCallback = {};
         m_semanticCallback = {};
     }
     m_runner.cancel();
@@ -89,6 +91,12 @@ void BaaCompilerBridge::setCompletionDataCallback(CompletionDataCallback callbac
     m_completionDataCallback = std::move(callback);
 }
 
+void BaaCompilerBridge::setFormatCallback(FormatCallback callback)
+{
+    std::scoped_lock lock(m_mutex);
+    m_formatCallback = std::move(callback);
+}
+
 void BaaCompilerBridge::setSemanticCallback(SemanticCallback callback)
 {
     std::scoped_lock lock(m_mutex);
@@ -106,6 +114,10 @@ void BaaCompilerBridge::schedule(BaaAnalysisRequest request)
         m_pending.insert_or_assign(request.uri, request);
         std::erase_if(m_pendingSymbols, [&request](const BaaSymbolRequest &symbolRequest) {
             return symbolRequest.uri == request.uri and symbolRequest.version != request.version;
+        });
+        std::erase_if(m_pendingFormats, [&request](const BaaFormatRequest &formatRequest) {
+            return formatRequest.uri == request.uri and
+                   formatRequest.version != request.version;
         });
         std::erase_if(m_pendingSemantic, [&request](const BaaSemanticRequest &semanticRequest) {
             return semanticRequest.uri == request.uri and
@@ -142,6 +154,19 @@ void BaaCompilerBridge::requestCompletionData()
     m_wake.notify_one();
 }
 
+void BaaCompilerBridge::requestFormat(BaaFormatRequest request)
+{
+    if (not request.isValid()) return;
+    {
+        std::scoped_lock lock(m_mutex);
+        if (m_stopping) return;
+        m_latestVersions.try_emplace(request.uri, request.version);
+        m_pendingFormats.push_back(std::move(request));
+        ++m_scheduleSerial;
+    }
+    m_wake.notify_one();
+}
+
 void BaaCompilerBridge::requestSemantic(BaaSemanticRequest request)
 {
     if (not request.isValid()) return;
@@ -165,6 +190,22 @@ void BaaCompilerBridge::cancelSymbols(std::uint64_t token)
             return request.token == token;
         });
         cancelActive = m_activeSymbolToken == token;
+        ++m_scheduleSerial;
+    }
+    if (cancelActive) m_runner.cancel();
+    m_wake.notify_one();
+}
+
+void BaaCompilerBridge::cancelFormat(std::uint64_t token)
+{
+    if (token == 0) return;
+    bool cancelActive = false;
+    {
+        std::scoped_lock lock(m_mutex);
+        std::erase_if(m_pendingFormats, [token](const BaaFormatRequest &request) {
+            return request.token == token;
+        });
+        cancelActive = m_activeFormatToken == token;
         ++m_scheduleSerial;
     }
     if (cancelActive) m_runner.cancel();
@@ -196,6 +237,9 @@ void BaaCompilerBridge::cancel(const std::string &uri)
         std::erase_if(m_pendingSymbols, [&uri](const BaaSymbolRequest &request) {
             return request.uri == uri;
         });
+        std::erase_if(m_pendingFormats, [&uri](const BaaFormatRequest &request) {
+            return request.uri == uri;
+        });
         std::erase_if(m_pendingSemantic, [&uri](const BaaSemanticRequest &request) {
             return request.uri == uri;
         });
@@ -214,6 +258,7 @@ void BaaCompilerBridge::cancelAll()
         std::scoped_lock lock(m_mutex);
         m_pending.clear();
         m_pendingSymbols.clear();
+        m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
         m_latestVersions.clear();
@@ -257,20 +302,24 @@ void BaaCompilerBridge::workerLoop()
     while (true) {
         BaaAnalysisRequest request;
         BaaSymbolRequest symbolRequest;
+        BaaFormatRequest formatRequest;
         BaaSemanticRequest semanticRequest;
         bool isSymbolRequest = false;
+        bool isFormatRequest = false;
         bool isSemanticRequest = false;
         bool isCompletionDataRequest = false;
         {
             std::unique_lock lock(m_mutex);
             m_wake.wait(lock, [this] {
                 return m_stopping or m_completionDataPending or
+                       not m_pendingFormats.empty() or
                        not m_pendingSemantic.empty() or
                        not m_pendingSymbols.empty() or not m_pending.empty();
             });
             if (m_stopping) return;
 
-            if (not m_completionDataPending and m_pendingSemantic.empty() and
+            if (not m_completionDataPending and m_pendingFormats.empty() and
+                m_pendingSemantic.empty() and
                 m_pendingSymbols.empty()) {
                 const std::uint64_t observedSerial = m_scheduleSerial;
                 const std::chrono::milliseconds debounce = m_debounce;
@@ -289,6 +338,16 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri.clear();
                 m_activeVersion = 0;
                 m_activeSymbolToken = 0;
+                m_activeFormatToken = 0;
+                m_activeSemanticToken = 0;
+            } else if (not m_pendingFormats.empty()) {
+                isFormatRequest = true;
+                formatRequest = std::move(m_pendingFormats.front());
+                m_pendingFormats.pop_front();
+                m_activeUri = formatRequest.uri;
+                m_activeVersion = formatRequest.version;
+                m_activeSymbolToken = 0;
+                m_activeFormatToken = formatRequest.token;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSemantic.empty()) {
                 isSemanticRequest = true;
@@ -297,6 +356,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = semanticRequest.uri;
                 m_activeVersion = semanticRequest.version;
                 m_activeSymbolToken = 0;
+                m_activeFormatToken = 0;
                 m_activeSemanticToken = semanticRequest.token;
             } else if (not m_pendingSymbols.empty()) {
                 isSymbolRequest = true;
@@ -305,6 +365,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = symbolRequest.uri;
                 m_activeVersion = symbolRequest.version;
                 m_activeSymbolToken = symbolRequest.token;
+                m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else {
                 if (m_pending.empty()) continue;
@@ -314,6 +375,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = request.uri;
                 m_activeVersion = request.version;
                 m_activeSymbolToken = 0;
+                m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             }
             m_runner.prepare();
@@ -356,15 +418,21 @@ void BaaCompilerBridge::workerLoop()
             continue;
         }
 
-        const std::string &filePath = isSemanticRequest
+        const std::string &filePath = isFormatRequest
+            ? formatRequest.filePath
+            : isSemanticRequest
             ? semanticRequest.filePath
             : (isSymbolRequest ? symbolRequest.filePath : request.filePath);
-        const std::string &text = isSemanticRequest
+        const std::string &text = isFormatRequest
+            ? formatRequest.text
+            : isSemanticRequest
             ? semanticRequest.text
             : (isSymbolRequest ? symbolRequest.text : request.text);
         const std::filesystem::path sourcePath = pathFromUtf8(filePath);
         std::vector<std::string> arguments;
-        if (isSemanticRequest) {
+        if (isFormatRequest) {
+            arguments = {"--format=json", "--source-stdin=" + filePath};
+        } else if (isSemanticRequest) {
             arguments = {
                 "--semantic-query=json",
                 "--position-byte=" + std::to_string(semanticRequest.positionByte)
@@ -387,6 +455,77 @@ void BaaCompilerBridge::workerLoop()
                 : sourcePath.parent_path();
         ProcessResult process = m_runner.run(
             compiler, arguments, workingDirectory, text);
+
+        if (isFormatRequest) {
+            BaaFormatResult result;
+            result.token = formatRequest.token;
+            result.uri = formatRequest.uri;
+            result.text = formatRequest.text;
+            result.version = formatRequest.version;
+            result.exitCode = process.exitCode;
+
+            if (not process.started) {
+                result.errorMessage = process.errorMessage.empty()
+                    ? "Baa compiler executable was not found."
+                    : process.errorMessage;
+            } else if (not process.cancelled) {
+                const Json parsed = Json::parse(
+                    process.standardOutput, nullptr, false);
+                if (process.exitCode == 0 and
+                    not parsed.is_discarded() and parsed.is_object() and
+                    parsed.value("schema_version", "") == "format-json-v1" and
+                    parsed.value("compiler_version", Json(nullptr)).is_string() and
+                    parsed.value("language", "") == "baa" and
+                    parsed.value("file", Json(nullptr)).is_string() and
+                    parsed.value("position_encoding", "") == "utf-8-bytes" and
+                    parsed.value("line_ending", "") == "lf" and
+                    parsed.value("indent_width", 0) == 4 and
+                    parsed.value("insert_spaces", false) and
+                    parsed.value("source_bytes", std::size_t{}) == text.size() and
+                    parsed.value("formatted_bytes", Json(nullptr))
+                        .is_number_unsigned() and
+                    parsed.value("changed", Json(nullptr)).is_boolean() and
+                    parsed.value("formatted_text", Json(nullptr)).is_string()) {
+                    result.formattedText =
+                        parsed["formatted_text"].get<std::string>();
+                    result.changed = parsed["changed"].get<bool>();
+                    const bool exactMetadata =
+                        parsed["formatted_bytes"].get<std::size_t>() ==
+                            result.formattedText.size() and
+                        result.changed == (result.formattedText != text);
+                    if (not exactMetadata) {
+                        result.errorMessage =
+                            "Baa returned formatting byte/change metadata that "
+                            "does not match format-json-v1.";
+                    }
+                } else {
+                    result.errorMessage =
+                        "Baa returned formatting data that does not satisfy "
+                        "format-json-v1.";
+                    if (not process.standardError.empty()) {
+                        result.errorMessage += " " +
+                            trimmed(process.standardError);
+                    }
+                }
+            }
+
+            FormatCallback callback;
+            bool publish = false;
+            {
+                std::scoped_lock lock(m_mutex);
+                m_activeUri.clear();
+                m_activeVersion = 0;
+                m_activeFormatToken = 0;
+                const auto latest = m_latestVersions.find(formatRequest.uri);
+                publish = not process.cancelled and
+                          latest != m_latestVersions.end() and
+                          latest->second == formatRequest.version;
+                callback = m_formatCallback;
+            }
+            if (publish and callback) callback(std::move(result));
+            m_wake.notify_one();
+            continue;
+        }
 
         if (isSemanticRequest) {
             BaaSemanticResult result;
@@ -547,6 +686,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri.clear();
                 m_activeVersion = 0;
                 m_activeSemanticToken = 0;
+                m_activeFormatToken = 0;
                 const auto latest = m_latestVersions.find(semanticRequest.uri);
                 publish = not process.cancelled and latest != m_latestVersions.end() and
                           latest->second == semanticRequest.version;
@@ -592,6 +732,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri.clear();
                 m_activeVersion = 0;
                 m_activeSymbolToken = 0;
+                m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
                 const auto latest = m_latestVersions.find(symbolRequest.uri);
                 publish = not process.cancelled and latest != m_latestVersions.end() and
@@ -635,6 +776,7 @@ void BaaCompilerBridge::workerLoop()
             m_activeUri.clear();
             m_activeVersion = 0;
             m_activeSymbolToken = 0;
+            m_activeFormatToken = 0;
             m_activeSemanticToken = 0;
             const auto latest = m_latestVersions.find(request.uri);
             publish = not process.cancelled and latest != m_latestVersions.end() and

@@ -60,6 +60,7 @@ def main():
         assert response["result"]["capabilities"]["hoverProvider"] is True
         assert response["result"]["capabilities"]["definitionProvider"] is True
         assert response["result"]["capabilities"]["referencesProvider"] is True
+        assert response["result"]["capabilities"]["documentFormattingProvider"] is True
         assert response["result"]["capabilities"]["codeActionProvider"] == {
             "codeActionKinds": ["quickfix"],
             "resolveProvider": False,
@@ -77,7 +78,7 @@ def main():
             "jsonrpc": "2.0", "method": "textDocument/didOpen",
             "params": {"textDocument": {
                 "uri": uri, "languageId": "baa", "version": 1,
-                "text": "صحيح الرئيسية() {\n    مفقود = ١.\n}\n",
+                "text": "صحيح الرئيسية(){\n    مفقود = ١.\n}\n",
             }},
         })
         diagnostics = read_message(process)
@@ -133,6 +134,27 @@ def main():
             },
         })
         assert read_response(process, 15)["result"] == []
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 16,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 8, "insertSpaces": False},
+            },
+        })
+        formatting = read_response(process, 16)["result"]
+        assert formatting == [{
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 3, "character": 0},
+            },
+            "newText": (
+                "صحيح الرئيسية() {\n"
+                "    مفقود = ١.\n"
+                "}\n"
+            ),
+        }]
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",

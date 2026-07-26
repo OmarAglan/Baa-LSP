@@ -13,6 +13,7 @@ int main(int argc, char **argv)
                              std::istreambuf_iterator<char>());
     bool dumpSymbols = false;
     bool completionData = false;
+    bool formatJson = false;
     bool semanticQuery = false;
     bool semanticIndex = false;
     std::string logicalFile = "رئيسي.baa";
@@ -23,6 +24,8 @@ int main(int argc, char **argv)
             dumpSymbols = true;
         } else if (argument == "--completion-data=json") {
             completionData = true;
+        } else if (argument == "--format=json") {
+            formatJson = true;
         } else if (argument == "--semantic-query=json") {
             semanticQuery = true;
         } else if (argument == "--semantic-index=json") {
@@ -31,6 +34,27 @@ int main(int argc, char **argv)
             positionByte = static_cast<std::size_t>(
                 std::stoull(std::string(argument.substr(16))));
         }
+    }
+    if (formatJson) {
+        const std::string formatted =
+            "صحيح الرئيسية() {\n"
+            "    مفقود = ١.\n"
+            "}\n";
+        std::cout << Json{
+            {"schema_version", "format-json-v1"},
+            {"compiler_version", "test"},
+            {"language", "baa"},
+            {"file", logicalFile},
+            {"position_encoding", "utf-8-bytes"},
+            {"line_ending", "lf"},
+            {"indent_width", 4},
+            {"insert_spaces", true},
+            {"source_bytes", source.size()},
+            {"formatted_bytes", formatted.size()},
+            {"changed", formatted != source},
+            {"formatted_text", formatted}
+        }.dump();
+        return 0;
     }
     if (completionData) {
         const Json items = Json::array({

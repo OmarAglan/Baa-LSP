@@ -34,7 +34,8 @@
 - [x] Collision-checked Arabic rename with versioned workspace edits,
   incomplete-index refusal, and exact compiler-owned occurrences.
 - [x] Code actions driven by stable diagnostic codes and structured edits.
-- [ ] Document formatting after Baa owns a stable formatting contract.
+- [x] Document formatting through Baa-owned `format-json-v1`, with one
+  full-document UTF-16 edit, cancellation, and stale-version rejection.
 
 ## 0.4 — Production admission
 
