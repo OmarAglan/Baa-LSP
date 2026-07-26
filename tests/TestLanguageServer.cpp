@@ -1,6 +1,7 @@
 #include "TestHarness.h"
 #include "server/BaaLanguageServer.h"
 
+#include <algorithm>
 #include <vector>
 
 int main()
@@ -22,7 +23,17 @@ int main()
     CHECK(messages.size() == 1);
     CHECK(messages[0]["result"]["capabilities"]["positionEncoding"] == "utf-16");
     CHECK(messages[0]["result"]["capabilities"].contains("textDocumentSync"));
-    CHECK(not messages[0]["result"]["capabilities"].contains("completionProvider"));
+    CHECK(messages[0]["result"]["capabilities"]["documentSymbolProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["hoverProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["definitionProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["referencesProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["renameProvider"]["prepareProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"].contains("signatureHelpProvider"));
+    CHECK(messages[0]["result"]["capabilities"].contains("completionProvider"));
+    const Json triggers =
+        messages[0]["result"]["capabilities"]["completionProvider"]["triggerCharacters"];
+    CHECK(std::ranges::find(triggers, Json("ا")) != triggers.end());
+    CHECK(std::ranges::find(triggers, Json("#")) != triggers.end());
 
     server.receiveMessage(R"({"jsonrpc":"2.0","method":"initialized","params":{}})");
     server.receiveMessage(R"({"jsonrpc":"2.0","id":3,"method":"shutdown","params":null})");

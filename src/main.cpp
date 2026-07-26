@@ -17,6 +17,7 @@ int runServer(const std::vector<std::string> &arguments,
               const std::filesystem::path &executablePath)
 {
     std::string compilerProgram;
+    std::string takweenProgram;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         const std::string &argument = arguments[index];
         if (argument == "--version") {
@@ -27,12 +28,18 @@ int runServer(const std::vector<std::string> &arguments,
             compilerProgram = arguments[++index];
         } else if (argument.starts_with("--baa-path=")) {
             compilerProgram = argument.substr(std::string("--baa-path=").size());
+        } else if (argument == "--takween-path" and index + 1 < arguments.size()) {
+            takweenProgram = arguments[++index];
+        } else if (argument.starts_with("--takween-path=")) {
+            takweenProgram =
+                argument.substr(std::string("--takween-path=").size());
         }
     }
 
     StdioTransport transport;
     BaaLanguageServer server;
     server.setCompilerProgram(std::move(compilerProgram));
+    server.setTakweenProgram(std::move(takweenProgram));
     server.setApplicationDirectory(std::filesystem::absolute(executablePath).parent_path());
 
     std::atomic_int exitCode{0};

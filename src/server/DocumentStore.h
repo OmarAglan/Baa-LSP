@@ -2,6 +2,7 @@
 
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 struct BaaDocument
 {
@@ -21,6 +22,7 @@ public:
 
     bool contains(const std::string &uri) const;
     BaaDocument document(const std::string &uri) const;
+    std::vector<BaaDocument> documents() const;
     void clear();
 
 private:

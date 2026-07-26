@@ -54,6 +54,17 @@ BaaDocument DocumentStore::document(const std::string &uri) const
     return it == m_documents.end() ? BaaDocument{} : it->second;
 }
 
+std::vector<BaaDocument> DocumentStore::documents() const
+{
+    std::vector<BaaDocument> result;
+    result.reserve(m_documents.size());
+    for (const auto &[uri, document] : m_documents) {
+        (void)uri;
+        result.push_back(document);
+    }
+    return result;
+}
+
 void DocumentStore::clear()
 {
     m_documents.clear();

@@ -13,6 +13,12 @@ int main()
     position = PositionEncoding::utf16PositionForByteOffset(emoji, std::string("😀").size());
     CHECK(position["line"] == 0);
     CHECK(position["character"] == 2);
+    CHECK(PositionEncoding::utf8ByteOffsetForUtf16Position(text, 1, 1) ==
+          secondLine + std::string("ص").size());
+    CHECK(PositionEncoding::utf8ByteOffsetForUtf16Position(emoji, 0, 2) ==
+          std::string("😀").size());
+    CHECK(PositionEncoding::utf8ByteOffsetForUtf16Position(emoji, 0, 1) == 0);
+    CHECK(PositionEncoding::utf8ByteOffsetForUtf16Position(text, 99, 0) == text.size());
 
     const std::string source = "صحيح الرئيسية() {\n    مفقود = ١.\n}\n";
     const std::size_t start = source.find("مفقود");
@@ -27,5 +33,92 @@ int main()
     CHECK(converted[0]["severity"] == 1);
     CHECK(converted[0]["range"]["start"]["line"] == 1);
     CHECK(converted[0]["range"]["start"]["character"] == 4);
+
+    const std::string symbolSource = "صحيح اجمع(صحيح أ، صحيح ب) {}\n";
+    const std::size_t functionStart = symbolSource.find("اجمع");
+    const std::size_t functionEnd = functionStart + std::string("اجمع").size();
+    const std::size_t parameterStart = symbolSource.find("أ");
+    const std::size_t parameterEnd = parameterStart + std::string("أ").size();
+    const Json symbols = Json::array({{
+        {"name", "اجمع"}, {"kind", "function"},
+        {"span", {
+            {"start", {{"byte", functionStart}}},
+            {"end", {{"byte", functionEnd}}}
+        }},
+        {"return_type", {{"kind", "int"}, {"display", "صحيح"}}},
+        {"children", Json::array({{
+            {"name", "أ"}, {"kind", "parameter"},
+            {"span", {
+                {"start", {{"byte", parameterStart}}},
+                {"end", {{"byte", parameterEnd}}}
+            }},
+            {"type", {{"kind", "int"}, {"display", "صحيح"}}}
+        }})}
+    }});
+    const Json convertedSymbols = PositionEncoding::baaSymbolsToLsp(symbolSource, symbols);
+    CHECK(convertedSymbols.size() == 1);
+    CHECK(convertedSymbols[0]["name"] == "اجمع");
+    CHECK(convertedSymbols[0]["kind"] == 12);
+    CHECK(convertedSymbols[0]["detail"] == "-> صحيح");
+    CHECK(convertedSymbols[0]["selectionRange"]["start"]["character"] == 5);
+    CHECK(convertedSymbols[0]["selectionRange"]["end"]["character"] == 9);
+    CHECK(convertedSymbols[0]["children"][0]["name"] == "أ");
+    CHECK(convertedSymbols[0]["children"][0]["kind"] == 13);
+    CHECK(convertedSymbols[0]["children"][0]["range"]["start"]["character"] == 15);
+
+    const Json hover = {
+        {"display", "صحيح اجمع(صحيح أول، صحيح ثان)"},
+        {"description", "دالة باء"},
+        {"range", {
+            {"start", {{"byte", functionStart}}},
+            {"end", {{"byte", functionEnd}}}
+        }}
+    };
+    const Json convertedHover =
+        PositionEncoding::baaSemanticHoverToLsp(symbolSource, hover);
+    CHECK(convertedHover["contents"]["kind"] == "markdown");
+    CHECK(convertedHover["contents"]["value"].get<std::string>().find("دالة باء") !=
+          std::string::npos);
+    CHECK(convertedHover["range"]["start"]["character"] == 5);
+    CHECK(convertedHover["range"]["end"]["character"] == 9);
+
+    const Json signature = {
+        {"label", "صحيح اجمع(صحيح أول، صحيح ثان)"},
+        {"active_parameter", 1},
+        {"parameters", Json::array({
+            {{"label", "صحيح أول"}}, {{"label", "صحيح ثان"}}
+        })}
+    };
+    const Json convertedSignature =
+        PositionEncoding::baaSignatureHelpToLsp(signature);
+    CHECK(convertedSignature["activeSignature"] == 0);
+    CHECK(convertedSignature["activeParameter"] == 1);
+    CHECK(convertedSignature["signatures"][0]["parameters"].size() == 2);
+
+    const Json location = {
+        {"file", "مسار/رئيسي.baa"},
+        {"range", {
+            {"start", {{"line", 1}, {"column", 6}, {"byte", functionStart}}},
+            {"end", {{"line", 1}, {"column", 10}, {"byte", functionEnd}}}
+        }}
+    };
+    const Json convertedLocation = PositionEncoding::baaLocationToLsp(
+        symbolSource, "file:///مسار/%D8%B1%D8%A6%D9%8A%D8%B3%D9%8A.baa",
+        location);
+    CHECK(convertedLocation["range"]["start"]["character"] == 5);
+    CHECK(convertedLocation["range"]["end"]["character"] == 9);
+
+    Json includedLocation = location;
+    includedLocation["range"]["start"].erase("byte");
+    includedLocation["range"]["end"].erase("byte");
+    includedLocation["range"]["start"]["column"] =
+        static_cast<int>(functionStart + 1);
+    includedLocation["range"]["end"]["column"] =
+        static_cast<int>(functionEnd + 1);
+    const Json convertedIncluded = PositionEncoding::baaLocationToLsp(
+        symbolSource, "file:///مسار/%D9%88%D8%A7%D8%AC%D9%87%D8%A9.baahd",
+        includedLocation);
+    CHECK(convertedIncluded["range"]["start"]["character"] == 5);
+    CHECK(convertedIncluded["range"]["end"]["character"] == 9);
     return 0;
 }

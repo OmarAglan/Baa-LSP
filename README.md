@@ -16,8 +16,12 @@ unsaved-source diagnostic contract:
 Qalam or another LSP client
           ↕ LSP over stdio
         Baa-LSP
-          ↕ compiler-cli-v1 + diagnostics-json-v1
+          ↕ compiler-cli-v1 + diagnostics-json-v1 + symbols-json-v1
+            + completion-data-json-v1 + semantic-query-json-v1
+            + semantic-index-json-v1
           Baa
+        ↕ takween-build-plan-v1
+       Takween
 ```
 
 ## Current slice
@@ -31,8 +35,39 @@ Qalam or another LSP client
   --source-stdin=<logical-path>`.
 - Conversion from Baa UTF-8 byte spans to LSP UTF-16 positions.
 - Version checks that reject stale document changes and analysis results.
+- Hierarchical `textDocument/documentSymbol` results sourced from Baa's
+  `symbols-json-v1` contract, including types and exact Arabic name ranges.
+- LSP request cancellation and content-modified rejection for obsolete symbol
+  work.
+- Arabic-first `textDocument/completion`: the server loads Baa's versioned
+  keywords, directives, and snippets once, merges version-matched document
+  symbols, and returns exact UTF-16 replacement edits.
+- Arabic letters and `#` are advertised as completion triggers; no Latin
+  shortcut vocabulary is embedded in the server.
+- Compiler-backed `textDocument/hover` and `textDocument/signatureHelp` through
+  `semantic-query-json-v1`, with exact UTF-16 ranges, active-parameter
+  selection, included prototypes, scope-correct shadowing, cancellation, and
+  stale-version rejection.
+- Compiler-backed `textDocument/definition` and `textDocument/references`
+  through the same cached query, with Arabic/space path URIs, included-header
+  locations, declaration filtering, cancellation, and stale-version rejection.
+- Takween-aware project fan-out: the server asks Takween for the authoritative
+  source/include closure and matches only Baa-owned structured symbol identities.
+- `textDocument/prepareRename` and `textDocument/rename` return versioned,
+  deduplicated workspace edits for compiler-resolved occurrences. Rename accepts
+  Arabic identifiers only and refuses reserved words, compiler-indexed
+  collisions, stale documents, or an incomplete project index.
 
 ## Build
+
+The recommended Windows command configures, builds, and tests with one selected
+MinGW toolchain and a normalized child-process environment:
+
+```powershell
+.\scripts\build-windows.ps1
+```
+
+The portable cross-platform commands remain:
 
 ```powershell
 cmake -S . -B build -DBAA_LSP_BUILD_TESTS=ON
@@ -43,11 +78,16 @@ ctest --test-dir build --output-on-failure
 The server has no graphical toolkit dependency. Its production code uses C++23,
 the operating system process APIs, and the header-only nlohmann/json library.
 Python is used only by the process-level protocol test.
+On Windows, MinGW and MSVC runtimes are linked into the server and its native
+test helpers. CTest also normalizes duplicate `Path`/`PATH` environments for
+child processes. The server and tests therefore do not depend on manual DLL
+path setup or on whichever compiler toolchain happens to appear first on the
+caller's path.
 
 Run the server over standard input/output:
 
 ```powershell
-baa-lsp --baa-path C:\path\to\baa.exe
+baa-lsp --baa-path C:\path\to\baa.exe --takween-path C:\path\to\takween.exe
 ```
 
 The `BAA` environment variable and an executable named `baa` on `PATH` are

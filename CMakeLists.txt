@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+include(cmake/WindowsRuntime.cmake)
+
 include(FetchContent)
 set(JSON_BuildTests OFF CACHE INTERNAL "")
 set(JSON_Install OFF CACHE INTERNAL "")
@@ -20,6 +22,10 @@ FetchContent_MakeAvailable(nlohmann_json)
 find_package(Threads REQUIRED)
 
 option(BAA_LSP_BUILD_TESTS "Build Baa-LSP tests" ON)
+set(BAA_LSP_BAA_EXECUTABLE "" CACHE FILEPATH
+    "Optional Baa compiler used by the real compiler/LSP integration test")
+set(BAA_LSP_TAKWEEN_EXECUTABLE "" CACHE FILEPATH
+    "Optional Takween executable used by the project navigation integration test")
 
 add_library(baa_lsp_core STATIC
     src/compiler/BaaCompilerBridge.cpp
@@ -39,6 +45,7 @@ add_library(baa_lsp_core STATIC
 
 target_include_directories(baa_lsp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(baa_lsp_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
+baa_lsp_harden_windows_runtime(baa_lsp_core)
 
 add_executable(baa-lsp
     src/main.cpp
@@ -46,6 +53,7 @@ add_executable(baa-lsp
     src/transport/StdioTransport.h
 )
 target_link_libraries(baa-lsp PRIVATE baa_lsp_core)
+baa_lsp_harden_windows_runtime(baa-lsp)
 
 install(TARGETS baa-lsp RUNTIME DESTINATION bin)
 
