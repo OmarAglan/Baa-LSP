@@ -15,10 +15,12 @@
 
 - [x] Add a versioned Baa document-symbol contract.
 - [x] Implement `textDocument/documentSymbol` with hierarchical UTF-16 ranges.
-- [ ] Add context-aware Baa completion and completion resolve.
+- [x] Add context-aware Baa completion and completion resolve.
   - [x] Load `completion-data-json-v1` from Baa and cache it for the server lifetime.
   - [x] Implement Arabic-prefix `textDocument/completion` with UTF-16 edits, snippets, document-global symbols, cancellation, and stale-version rejection.
-  - [ ] Add scope-aware locals, included standard-library declarations, compiler builtins, and completion resolve documentation.
+  - [x] Add compiler-owned visible locals, parameters, included declarations,
+    builtin signatures, lexical shadowing, and `completionItem/resolve`
+    documentation without adding a parser or semantic table to Baa-LSP.
 - [x] Implement compiler-backed hover and signature help with UTF-16 ranges,
   active parameters, cancellation, version checks, and incomplete-call coverage.
 - [ ] Add workspace symbol indexing without duplicating Baa semantics.

@@ -59,6 +59,7 @@ int main(int argc, char **argv)
     if (completionData) {
         const Json items = Json::array({
             {{"label", "صحيح"}, {"kind", "type"}, {"detail", "نوع عدد صحيح"},
+             {"documentation", "النوع الصحيح الافتراضي في باء."},
              {"filter_text", "صحيح"}, {"insert_text", "صحيح"},
              {"insert_text_format", "plain"}},
             {{"label", "الرئيسية (دالة)"}, {"kind", "snippet"},
@@ -82,6 +83,38 @@ int main(int argc, char **argv)
         Json signature = nullptr;
         Json definition = nullptr;
         Json references = Json::array();
+        const Json completionItems = Json::array({
+            {
+                {"label", "الرئيسية"},
+                {"kind", "function"},
+                {"detail", "صحيح الرئيسية()"},
+                {"documentation", "دالة باء ونقطة بدء البرنامج."},
+                {"filter_text", "الرئيسية"},
+                {"insert_text", "الرئيسية"},
+                {"insert_text_format", "plain"},
+                {"scope", "global"}
+            },
+            {
+                {"label", "قيمة_محلية"},
+                {"kind", "variable"},
+                {"detail", "صحيح قيمة_محلية"},
+                {"documentation", "متغير محلي مرئي عند موضع المؤشر."},
+                {"filter_text", "قيمة_محلية"},
+                {"insert_text", "قيمة_محلية"},
+                {"insert_text_format", "plain"},
+                {"scope", "local"}
+            },
+            {
+                {"label", "من_واجهة"},
+                {"kind", "function"},
+                {"detail", "صحيح من_واجهة()"},
+                {"documentation", "تصريح مضمّن يملكه مترجم باء."},
+                {"filter_text", "من_واجهة"},
+                {"insert_text", "من_واجهة"},
+                {"insert_text_format", "plain"},
+                {"scope", "included"}
+            }
+        });
         Json symbol = nullptr;
         if (start != std::string::npos) {
             symbol = {
@@ -145,7 +178,8 @@ int main(int argc, char **argv)
             {"hover", hover},
             {"signature_help", signature},
             {"definition", definition},
-            {"references", references}
+            {"references", references},
+            {"completion", {{"items", completionItems}}}
         }.dump();
         return 0;
     }

@@ -350,6 +350,7 @@ int metadataCompletionKind(std::string_view kind)
     if (kind == "snippet") return 15;
     if (kind == "value") return 12;
     if (kind == "type") return 7;
+    if (kind == "function") return 3;
     return 14;
 }
 
@@ -409,6 +410,41 @@ Json buildCompletionItems(std::string_view text,
     Json result = Json::array();
     std::unordered_set<std::string> seen;
 
+    if (not directiveContext and symbols.is_array()) {
+        for (const Json &symbol : symbols) {
+            if (not symbol.is_object()) continue;
+            const std::string name = symbol.value(
+                "label", symbol.value("name", ""));
+            const std::string kind = symbol.value("kind", "");
+            if (name.empty() or not completionMatches(name, prefix)) continue;
+            if (not seen.insert(name).second) continue;
+            Json item{
+                {"label", name},
+                {"kind", symbolCompletionKind(kind)},
+                {"filterText", symbol.value("filter_text", name)},
+                {"insertTextFormat", 1},
+                {"sortText", "0" + name},
+                {"textEdit", {
+                    {"range", replacementRange},
+                    {"newText", symbol.value("insert_text", name)}
+                }}
+            };
+            const std::string explicitDetail = symbol.value("detail", "");
+            const std::string detail = explicitDetail.empty()
+                ? completionSymbolDetail(symbol) : explicitDetail;
+            if (not detail.empty()) item["detail"] = detail;
+            const std::string documentation =
+                symbol.value("documentation", "");
+            if (not documentation.empty()) {
+                item["data"] = {
+                    {"source", "baa-compiler"},
+                    {"documentation", documentation}
+                };
+            }
+            result.push_back(std::move(item));
+        }
+    }
+
     if (metadata.is_array()) {
         for (const Json &source : metadata) {
             if (not source.is_object()) continue;
@@ -419,8 +455,7 @@ Json buildCompletionItems(std::string_view text,
             if (label.empty() or filter.empty() or isDirective != directiveContext or
                 not completionMatches(filter, prefix)) continue;
             const std::string insertion = source.value("insert_text", filter);
-            const std::string key = kind + "\n" + label + "\n" + insertion;
-            if (not seen.insert(key).second) continue;
+            if (not seen.insert(label).second) continue;
 
             Json item{
                 {"label", label},
@@ -433,28 +468,14 @@ Json buildCompletionItems(std::string_view text,
             };
             const std::string detail = source.value("detail", "");
             if (not detail.empty()) item["detail"] = detail;
-            result.push_back(std::move(item));
-        }
-    }
-
-    if (not directiveContext and symbols.is_array()) {
-        for (const Json &symbol : symbols) {
-            if (not symbol.is_object()) continue;
-            const std::string name = symbol.value("name", "");
-            const std::string kind = symbol.value("kind", "");
-            if (name.empty() or not completionMatches(name, prefix)) continue;
-            const std::string key = "symbol\n" + name;
-            if (not seen.insert(key).second) continue;
-            Json item{
-                {"label", name},
-                {"kind", symbolCompletionKind(kind)},
-                {"filterText", name},
-                {"insertTextFormat", 1},
-                {"sortText", "0" + name},
-                {"textEdit", {{"range", replacementRange}, {"newText", name}}}
-            };
-            const std::string detail = completionSymbolDetail(symbol);
-            if (not detail.empty()) item["detail"] = detail;
+            const std::string documentation =
+                source.value("documentation", "");
+            if (not documentation.empty()) {
+                item["data"] = {
+                    {"source", "baa-compiler"},
+                    {"documentation", documentation}
+                };
+            }
             result.push_back(std::move(item));
         }
     }
@@ -712,7 +733,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
                     {"retriggerCharacters", Json::array({"،", ","})}
                 }},
                 {"completionProvider", {
-                    {"resolveProvider", false},
+                    {"resolveProvider", true},
                     {"triggerCharacters", completionTriggerCharacters()}
                 }}
             }},
@@ -759,6 +780,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/completion") {
         handleCompletion(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "completionItem/resolve") {
+        handleCompletionResolve(id, objectValue(message, "params"));
         return;
     }
     if (method == "textDocument/hover") {
@@ -1072,30 +1097,34 @@ void BaaLanguageServer::completeRequest(const Json &id,
         document = m_documents.document(uri);
     }
 
-    Json metadata;
-    {
-        std::scoped_lock lock(m_completionMutex);
-        metadata = m_completionItems;
-    }
-    Json symbols = Json::array();
-    bool hasCurrentSymbols = false;
-    {
-        std::scoped_lock lock(m_symbolRequestsMutex);
-        const auto it = m_symbolCache.find(uri);
-        if (it != m_symbolCache.end() and it->second.version == version) {
-            symbols = it->second.symbols;
-            hasCurrentSymbols = true;
-        }
-    }
+    handleSemanticRequest(
+        id,
+        {
+            {"textDocument", {{"uri", uri}}},
+            {"position", {{"line", line}, {"character", character}}}
+        },
+        SemanticReplyKind::Completion);
+}
 
-    const std::size_t cursor = PositionEncoding::utf8ByteOffsetForUtf16Position(
-        document.text, line, character);
-    const std::size_t prefixStart = completionPrefixStart(document.text, cursor);
-    sendResult(id, {
-        {"isIncomplete", not hasCurrentSymbols},
-        {"items", buildCompletionItems(document.text, prefixStart, cursor,
-                                       metadata, symbols)}
-    });
+void BaaLanguageServer::handleCompletionResolve(const Json &id,
+                                                const Json &item)
+{
+    if (not item.is_object()) {
+        sendError(id, InvalidParams,
+                  "completionItem/resolve requires a completion item.");
+        return;
+    }
+    Json resolved = item;
+    const Json data = objectValue(item, "data");
+    const std::string documentation =
+        stringValue(data, "documentation");
+    if (not documentation.empty()) {
+        resolved["documentation"] = {
+            {"kind", "markdown"},
+            {"value", documentation}
+        };
+    }
+    sendResult(id, resolved);
 }
 
 void BaaLanguageServer::handleCodeAction(const Json &id, const Json &params)
@@ -1329,6 +1358,11 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
     const bool includeDeclaration =
         kind == SemanticReplyKind::References and
         objectValue(params, "context").value("includeDeclaration", false);
+    const bool projectIndexRequired =
+        kind == SemanticReplyKind::Definition or
+        kind == SemanticReplyKind::References or
+        kind == SemanticReplyKind::PrepareRename or
+        kind == SemanticReplyKind::Rename;
     std::string newName;
     if (kind == SemanticReplyKind::Rename) {
         newName = stringValue(params, "newName");
@@ -1349,7 +1383,9 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
         const auto cached = m_semanticCache.find(uri);
         if (cached != m_semanticCache.end() and
             cached->second.version == document.version and
-            cached->second.positionByte == positionByte) {
+            cached->second.positionByte == positionByte and
+            (not projectIndexRequired or
+             cached->second.projectIndexIncluded)) {
             if (kind == SemanticReplyKind::Rename) {
                 std::string error;
                 Json edit = renameWorkspaceEdit(
@@ -1376,7 +1412,8 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
         std::scoped_lock lock(m_semanticMutex);
         for (auto &[existingToken, pending] : m_semanticRequests) {
             if (pending.uri == uri and pending.version == document.version and
-                pending.positionByte == positionByte) {
+                pending.positionByte == positionByte and
+                pending.projectIndexRequired == projectIndexRequired) {
                 pending.replies.push_back(reply);
                 return;
             }
@@ -1387,6 +1424,7 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
         pending.uri = uri;
         pending.version = document.version;
         pending.positionByte = positionByte;
+        pending.projectIndexRequired = projectIndexRequired;
         pending.replies.push_back(reply);
         compilerRequest.token = token;
         compilerRequest.uri = uri;
@@ -1394,52 +1432,55 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
         compilerRequest.text = document.text;
         compilerRequest.version = document.version;
         compilerRequest.positionByte = positionByte;
+        compilerRequest.projectIndexRequired = projectIndexRequired;
         if (m_projectPlan.loaded) {
             compilerRequest.projectWorkingDirectory =
                 m_projectPlan.workingDirectory;
             compilerRequest.includePaths = m_projectPlan.includePaths;
 
-            std::unordered_map<std::string, BaaDocument> openByPath;
-            for (const BaaDocument &open : openDocuments) {
-                const std::string openPath = localPathForUri(open.uri);
-                const std::string comparable =
-                    comparablePath(pathFromUtf8(openPath));
-                if (not comparable.empty())
-                    openByPath.insert_or_assign(comparable, open);
-            }
-            bool originIncluded = false;
-            for (const std::filesystem::path &source :
-                 m_projectPlan.sourceFiles) {
-                BaaSemanticRequest::ProjectSource projectSource;
-                projectSource.filePath = utf8FromPath(source);
-                const std::string comparable = comparablePath(source);
-                const auto open = openByPath.find(comparable);
-                if (open != openByPath.end()) {
-                    projectSource.uri = open->second.uri;
-                    projectSource.text = open->second.text;
-                    projectSource.version = open->second.version;
-                    projectSource.useStandardInput = true;
-                    pending.projectTexts.insert_or_assign(
-                        open->second.uri, open->second.text);
-                    pending.projectVersions.insert_or_assign(
-                        open->second.uri, open->second.version);
-                } else {
-                    projectSource.uri = fileUriForPath(source);
+            if (projectIndexRequired) {
+                std::unordered_map<std::string, BaaDocument> openByPath;
+                for (const BaaDocument &open : openDocuments) {
+                    const std::string openPath = localPathForUri(open.uri);
+                    const std::string comparable =
+                        comparablePath(pathFromUtf8(openPath));
+                    if (not comparable.empty())
+                        openByPath.insert_or_assign(comparable, open);
                 }
-                if (comparable == comparablePath(pathFromUtf8(path)))
-                    originIncluded = true;
-                compilerRequest.projectSources.push_back(
-                    std::move(projectSource));
+                bool originIncluded = false;
+                for (const std::filesystem::path &source :
+                     m_projectPlan.sourceFiles) {
+                    BaaSemanticRequest::ProjectSource projectSource;
+                    projectSource.filePath = utf8FromPath(source);
+                    const std::string comparable = comparablePath(source);
+                    const auto open = openByPath.find(comparable);
+                    if (open != openByPath.end()) {
+                        projectSource.uri = open->second.uri;
+                        projectSource.text = open->second.text;
+                        projectSource.version = open->second.version;
+                        projectSource.useStandardInput = true;
+                        pending.projectTexts.insert_or_assign(
+                            open->second.uri, open->second.text);
+                        pending.projectVersions.insert_or_assign(
+                            open->second.uri, open->second.version);
+                    } else {
+                        projectSource.uri = fileUriForPath(source);
+                    }
+                    if (comparable == comparablePath(pathFromUtf8(path)))
+                        originIncluded = true;
+                    compilerRequest.projectSources.push_back(
+                        std::move(projectSource));
+                }
+                if (not originIncluded) {
+                    compilerRequest.projectSources.push_back({
+                        uri, path, document.text, document.version, true
+                    });
+                    pending.projectTexts.insert_or_assign(uri, document.text);
+                    pending.projectVersions.insert_or_assign(
+                        uri, document.version);
+                }
             }
-            if (not originIncluded) {
-                compilerRequest.projectSources.push_back({
-                    uri, path, document.text, document.version, true
-                });
-                pending.projectTexts.insert_or_assign(uri, document.text);
-                pending.projectVersions.insert_or_assign(
-                    uri, document.version);
-            }
-        } else {
+        } else if (projectIndexRequired) {
             compilerRequest.projectSources.push_back({
                 uri, path, document.text, document.version, true
             });
@@ -1671,6 +1712,24 @@ Json BaaLanguageServer::convertSemanticReply(
     const CachedSemanticQuery &query)
 {
     switch (reply.kind) {
+        case SemanticReplyKind::Completion:
+        {
+            Json metadata;
+            {
+                std::scoped_lock lock(m_completionMutex);
+                metadata = m_completionItems;
+            }
+            const std::size_t cursor =
+                std::min(query.positionByte, query.text.size());
+            const std::size_t prefixStart =
+                completionPrefixStart(query.text, cursor);
+            return {
+                {"isIncomplete", not query.completionComplete},
+                {"items", buildCompletionItems(
+                    query.text, prefixStart, cursor,
+                    metadata, query.completionItems)}
+            };
+        }
         case SemanticReplyKind::Hover:
             return PositionEncoding::baaSemanticHoverToLsp(
                 query.text, query.hover);
@@ -1957,10 +2016,13 @@ void BaaLanguageServer::onSemanticFinished(BaaSemanticResult result)
     completed.signatureHelp = std::move(result.signatureHelp);
     completed.definition = std::move(result.definition);
     completed.references = std::move(result.references);
+    completed.completionItems = std::move(result.completionItems);
+    completed.completionComplete = result.completionComplete;
     completed.symbol = std::move(result.symbol);
     completed.projectOccurrences = std::move(result.projectOccurrences);
     completed.projectIndexOccurrences =
         std::move(result.projectIndexOccurrences);
+    completed.projectIndexIncluded = pending.projectIndexRequired;
     completed.projectIndexComplete = result.projectIndexComplete;
     completed.projectTexts = std::move(pending.projectTexts);
     completed.projectVersions = std::move(pending.projectVersions);

@@ -69,7 +69,9 @@ def main():
             "prepareProvider": True
         }
         assert "signatureHelpProvider" in response["result"]["capabilities"]
-        triggers = response["result"]["capabilities"]["completionProvider"]["triggerCharacters"]
+        completion_provider = response["result"]["capabilities"]["completionProvider"]
+        assert completion_provider["resolveProvider"] is True
+        triggers = completion_provider["triggerCharacters"]
         assert "ا" in triggers
         assert "#" in triggers
 
@@ -184,13 +186,23 @@ def main():
         main_items = [item for item in completion["items"] if item["label"] == "الرئيسية"]
         assert len(main_items) == 1
         assert main_items[0]["kind"] == 3
-        assert main_items[0]["detail"] == "دالة ← صحيح"
+        assert main_items[0]["detail"] == "صحيح الرئيسية()"
+        assert main_items[0]["data"]["source"] == "baa-compiler"
         assert main_items[0]["textEdit"] == {
             "range": {
                 "start": {"line": 0, "character": 5},
                 "end": {"line": 0, "character": 7},
             },
             "newText": "الرئيسية",
+        }
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 17, "method": "completionItem/resolve",
+            "params": main_items[0],
+        })
+        resolved = read_response(process, 17)["result"]
+        assert resolved["documentation"] == {
+            "kind": "markdown",
+            "value": "دالة باء ونقطة بدء البرنامج.",
         }
 
         semantic_source = (
@@ -239,6 +251,20 @@ def main():
         assert signature["activeSignature"] == 0
         assert signature["activeParameter"] == 1
         assert len(signature["signatures"][0]["parameters"]) == 2
+
+        # A completion query intentionally skips the project index. A
+        # navigation request at the identical cursor must upgrade that cached
+        # result before references and rename reuse it.
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 18,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": 2, "character": 12},
+            },
+        })
+        cached_completion = read_response(process, 18)["result"]
+        assert cached_completion["isIncomplete"] is False
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 8, "method": "textDocument/definition",

@@ -40,8 +40,14 @@ Qalam or another LSP client
 - LSP request cancellation and content-modified rejection for obsolete symbol
   work.
 - Arabic-first `textDocument/completion`: the server loads Baa's versioned
-  keywords, directives, and snippets once, merges version-matched document
-  symbols, and returns exact UTF-16 replacement edits.
+  keywords, directives, snippets, and compiler builtin signatures once, then
+  asks `semantic-query-json-v1` for parameters, visible locals, globals, types,
+  and explicitly included declarations at the exact cursor. Inner declarations
+  shadow outer ones; future and sibling-scope declarations are excluded.
+  Results use exact UTF-16 replacement edits, cancellation, and stale-version
+  rejection.
+- `completionItem/resolve` returns Baa-owned Arabic documentation without
+  introducing a language-description table in the server.
 - Arabic letters and `#` are advertised as completion triggers; no Latin
   shortcut vocabulary is embedded in the server.
 - Compiler-backed `textDocument/hover` and `textDocument/signatureHelp` through

@@ -32,6 +32,7 @@ public:
 private:
     enum class SemanticReplyKind
     {
+        Completion,
         Hover,
         SignatureHelp,
         Definition,
@@ -48,6 +49,7 @@ private:
     void handleDidClose(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
+    void handleCompletionResolve(const Json &id, const Json &item);
     void handleCodeAction(const Json &id, const Json &params);
     void handleDocumentFormatting(const Json &id, const Json &params);
     void handleSemanticRequest(const Json &id,
@@ -141,6 +143,7 @@ private:
         std::string uri;
         int version{};
         std::size_t positionByte{};
+        bool projectIndexRequired{};
         std::unordered_map<std::string, std::string> projectTexts;
         std::unordered_map<std::string, int> projectVersions;
     };
@@ -153,9 +156,12 @@ private:
         Json signatureHelp = nullptr;
         Json definition = nullptr;
         Json references = Json::array();
+        Json completionItems = Json::array();
+        bool completionComplete{};
         Json symbol = nullptr;
         Json projectOccurrences = Json::array();
         Json projectIndexOccurrences = Json::array();
+        bool projectIndexIncluded{};
         bool projectIndexComplete{true};
         std::unordered_map<std::string, std::string> projectTexts;
         std::unordered_map<std::string, int> projectVersions;

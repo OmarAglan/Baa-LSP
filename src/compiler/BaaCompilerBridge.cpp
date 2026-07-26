@@ -548,6 +548,8 @@ void BaaCompilerBridge::workerLoop()
                 result.signatureHelp = nullptr;
                 result.definition = nullptr;
                 result.references = Json::array();
+                result.completionItems = Json::array();
+                result.completionComplete = false;
             } else if (not process.cancelled) {
                 const Json parsed = Json::parse(process.standardOutput, nullptr, false);
                 if (not parsed.is_discarded() and parsed.is_object() and
@@ -560,11 +562,18 @@ void BaaCompilerBridge::workerLoop()
                     parsed.contains("signature_help") and
                     parsed.contains("definition") and
                     parsed.contains("references") and
-                    parsed["references"].is_array()) {
+                    parsed["references"].is_array() and
+                    parsed.contains("completion") and
+                    parsed["completion"].is_object() and
+                    parsed["completion"].contains("items") and
+                    parsed["completion"]["items"].is_array()) {
                     result.hover = parsed["hover"];
                     result.signatureHelp = parsed["signature_help"];
                     result.definition = parsed["definition"];
                     result.references = parsed["references"];
+                    result.completionItems =
+                        parsed["completion"]["items"];
+                    result.completionComplete = true;
                     result.symbol = parsed["symbol"];
                 } else {
                     result.errorMessage =
@@ -578,6 +587,7 @@ void BaaCompilerBridge::workerLoop()
 
             if (result.errorMessage.empty() and
                 not process.cancelled and result.symbol.is_object() and
+                semanticRequest.projectIndexRequired and
                 not semanticRequest.projectSources.empty()) {
                 const std::string domain = result.symbol.value("domain", "");
                 const bool projectIdentity =

@@ -112,6 +112,7 @@ struct BaaSemanticRequest
     std::filesystem::path projectWorkingDirectory;
     std::vector<std::string> includePaths;
     std::vector<ProjectSource> projectSources;
+    bool projectIndexRequired{};
 
     bool isValid() const { return token != 0 and not uri.empty() and not filePath.empty(); }
 };
@@ -128,6 +129,8 @@ struct BaaSemanticResult
     Json signatureHelp = nullptr;
     Json definition = nullptr;
     Json references = Json::array();
+    Json completionItems = Json::array();
+    bool completionComplete{};
     Json symbol = nullptr;
     Json projectOccurrences = Json::array();
     Json projectIndexOccurrences = Json::array();

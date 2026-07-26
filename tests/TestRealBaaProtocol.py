@@ -44,7 +44,8 @@ def main():
     source = (
         "صحيح اجمع(صحيح أول، صحيح ثان) { إرجع أول + ثان. }\n"
         "صحيح الرئيسية() {\n"
-        "    إرجع اجمع(١، ٢).\n"
+        "    صحيح قيمة_محلية = ١.\n"
+        "    إرجع اجمع(قيمة_محلية، ٢).\n"
         "}\n"
     )
 
@@ -104,19 +105,45 @@ def main():
         assert any(item["label"] == "الرئيسية" for item in completion["items"])
         assert all(item.get("filterText") != "main" for item in completion["items"])
 
-        call_line = source.splitlines()[2]
+        call_line = source.splitlines()[3]
         call_start = call_line.index("اجمع")
+        local_start = call_line.index("قيمة_محلية")
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 18, "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {
+                    "line": 3,
+                    "character": local_start + len("قيمة"),
+                },
+            },
+        })
+        local_completion = read_response(process, 18)["result"]
+        local_items = [
+            item for item in local_completion["items"]
+            if item["label"] == "قيمة_محلية"
+        ]
+        assert len(local_items) == 1
+        assert local_items[0]["kind"] == 6
+        assert local_items[0]["textEdit"]["range"] == {
+            "start": {"line": 3, "character": local_start},
+            "end": {
+                "line": 3,
+                "character": local_start + len("قيمة"),
+            },
+        }
+        assert local_items[0]["data"]["source"] == "baa-compiler"
         send_message(process, {
             "jsonrpc": "2.0", "id": 5, "method": "textDocument/hover",
             "params": {
                 "textDocument": {"uri": uri},
-                "position": {"line": 2, "character": call_start + 1},
+                "position": {"line": 3, "character": call_start + 1},
             },
         })
         hover = read_response(process, 5)["result"]
         assert hover["range"] == {
-            "start": {"line": 2, "character": call_start},
-            "end": {"line": 2, "character": call_start + len("اجمع")},
+            "start": {"line": 3, "character": call_start},
+            "end": {"line": 3, "character": call_start + len("اجمع")},
         }
         assert "صحيح اجمع(صحيح أول، صحيح ثان)" in hover["contents"]["value"]
 
@@ -124,7 +151,7 @@ def main():
             "jsonrpc": "2.0", "id": 6, "method": "textDocument/signatureHelp",
             "params": {
                 "textDocument": {"uri": uri},
-                "position": {"line": 2, "character": call_line.index("٢")},
+                "position": {"line": 3, "character": call_line.index("٢")},
             },
         })
         signature = read_response(process, 6)["result"]
@@ -140,7 +167,7 @@ def main():
             "jsonrpc": "2.0", "id": 7, "method": "textDocument/definition",
             "params": {
                 "textDocument": {"uri": uri},
-                "position": {"line": 2, "character": call_start + 1},
+                "position": {"line": 3, "character": call_start + 1},
             },
         })
         definition = read_response(process, 7)["result"]
@@ -154,13 +181,13 @@ def main():
             "jsonrpc": "2.0", "id": 8, "method": "textDocument/references",
             "params": {
                 "textDocument": {"uri": uri},
-                "position": {"line": 2, "character": call_start + 1},
+                "position": {"line": 3, "character": call_start + 1},
                 "context": {"includeDeclaration": True},
             },
         })
         references = read_response(process, 8)["result"]
         assert len(references) == 2
-        assert {item["range"]["start"]["line"] for item in references} == {0, 2}
+        assert {item["range"]["start"]["line"] for item in references} == {0, 3}
 
         header = pathlib.Path(directory, "واجهة عربية.baahd")
         header.write_text(
@@ -186,6 +213,24 @@ def main():
         assert included_diagnostics["params"]["diagnostics"] == []
 
         included_call = included_source.splitlines()[2].index("ضاعف")
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 19, "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {
+                    "line": 2,
+                    "character": included_call + len("ضا"),
+                },
+            },
+        })
+        included_completion = read_response(process, 19)["result"]
+        included_items = [
+            item for item in included_completion["items"]
+            if item["label"] == "ضاعف"
+        ]
+        assert len(included_items) == 1
+        assert included_items[0]["kind"] == 3
+        assert included_items[0]["data"]["source"] == "baa-compiler"
         send_message(process, {
             "jsonrpc": "2.0", "id": 9, "method": "textDocument/definition",
             "params": {
