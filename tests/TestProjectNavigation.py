@@ -141,7 +141,8 @@ def main():
                 "params": {"rootUri": root.resolve().as_uri()},
             },
         )
-        assert "result" in read_response(process, 1)
+        initialized = read_response(process, 1)
+        assert initialized["result"]["capabilities"]["workspaceSymbolProvider"] is True
         send_message(
             process,
             {
@@ -168,7 +169,64 @@ def main():
         diagnostics = read_diagnostics(process, caller_uri, 1)
         assert diagnostics["params"]["diagnostics"] == []
 
-        call_line = caller_text.splitlines()[2]
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 20,
+                "method": "workspace/symbol",
+                "params": {"query": ""},
+            },
+        )
+        project_symbols = read_response(process, 20)["result"]
+        symbol_names = {item["name"] for item in project_symbols}
+        assert {
+            "الرئيسية",
+            "ضاعف",
+            "محجوز",
+        }.issubset(symbol_names), project_symbols
+        assert "قيمة" not in symbol_names, project_symbols
+        assert {
+            comparable_uri(item["location"]["uri"])
+            for item in project_symbols
+        } == {
+            comparable_uri(caller.resolve().as_uri()),
+            comparable_uri(implementation.resolve().as_uri()),
+        }, project_symbols
+
+        unsaved_caller_text = (
+            caller_text
+            + "صحيح غير_محفوظ() { إرجع ١. }\n"
+        )
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "method": "textDocument/didChange",
+                "params": {
+                    "textDocument": {"uri": caller_uri, "version": 2},
+                    "contentChanges": [{"text": unsaved_caller_text}],
+                },
+            },
+        )
+        changed_diagnostics = read_diagnostics(process, caller_uri, 2)
+        assert changed_diagnostics["params"]["diagnostics"] == []
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 21,
+                "method": "workspace/symbol",
+                "params": {"query": "غير_محفوظ"},
+            },
+        )
+        unsaved_symbols = read_response(process, 21)["result"]
+        assert len(unsaved_symbols) == 1, unsaved_symbols
+        assert comparable_uri(
+            unsaved_symbols[0]["location"]["uri"]
+        ) == comparable_uri(caller_uri)
+
+        call_line = unsaved_caller_text.splitlines()[2]
         call_start = call_line.index("ضاعف")
         position = {"line": 2, "character": call_start + 1}
         send_message(
@@ -273,7 +331,7 @@ def main():
             if comparable_uri(change["textDocument"]["uri"])
             == comparable_uri(caller_uri)
         )
-        assert caller_change["textDocument"]["version"] == 1
+        assert caller_change["textDocument"]["version"] == 2
         assert all(
             edit["newText"] == "احسب"
             for change in changes

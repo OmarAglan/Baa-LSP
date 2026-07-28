@@ -136,7 +136,8 @@ void BaaCompilerBridge::requestSymbols(BaaSymbolRequest request)
     {
         std::scoped_lock lock(m_mutex);
         if (m_stopping) return;
-        m_latestVersions.try_emplace(request.uri, request.version);
+        if (request.requireLatestVersion)
+            m_latestVersions.try_emplace(request.uri, request.version);
         m_pendingSymbols.push_back(std::move(request));
         ++m_scheduleSerial;
     }
@@ -443,7 +444,12 @@ void BaaCompilerBridge::workerLoop()
             }
             arguments.push_back("--source-stdin=" + filePath);
         } else if (isSymbolRequest) {
-            arguments = {"--dump-symbols=json", "--source-stdin=" + filePath};
+            arguments = {"--dump-symbols=json"};
+            for (const std::string &includePath : symbolRequest.includePaths) {
+                arguments.push_back("-I");
+                arguments.push_back(includePath);
+            }
+            arguments.push_back("--source-stdin=" + filePath);
         } else {
             arguments = {"--check", "--diagnostics=json",
                          "--source-stdin=" + filePath};
@@ -745,8 +751,10 @@ void BaaCompilerBridge::workerLoop()
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
                 const auto latest = m_latestVersions.find(symbolRequest.uri);
-                publish = not process.cancelled and latest != m_latestVersions.end() and
-                          latest->second == symbolRequest.version;
+                publish = not process.cancelled and
+                          (not symbolRequest.requireLatestVersion or
+                           (latest != m_latestVersions.end() and
+                            latest->second == symbolRequest.version));
                 callback = m_symbolCallback;
             }
             if (publish and callback) callback(std::move(result));

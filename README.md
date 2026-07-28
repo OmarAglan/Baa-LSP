@@ -37,6 +37,11 @@ Qalam or another LSP client
 - Version checks that reject stale document changes and analysis results.
 - Hierarchical `textDocument/documentSymbol` results sourced from Baa's
   `symbols-json-v1` contract, including types and exact Arabic name ranges.
+- Cached `workspace/symbol` results sourced from the same compiler contract.
+  Takween supplies the authoritative project source closure; open files use
+  their current unsaved text and closed files are read from disk. The server
+  filters the cached index locally while the user types and does not parse the
+  manifest, compiler messages, or source text.
 - LSP request cancellation and content-modified rejection for obsolete symbol
   work.
 - Arabic-first `textDocument/completion`: the server loads Baa's versioned

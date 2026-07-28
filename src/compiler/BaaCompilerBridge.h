@@ -44,6 +44,8 @@ struct BaaSymbolRequest
     std::string filePath;
     std::string text;
     int version{};
+    std::vector<std::string> includePaths;
+    bool requireLatestVersion{true};
 
     bool isValid() const { return token != 0 and not uri.empty() and not filePath.empty(); }
 };

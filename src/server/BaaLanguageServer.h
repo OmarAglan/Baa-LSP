@@ -48,6 +48,7 @@ private:
     void handleDidSave(const Json &params);
     void handleDidClose(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
+    void handleWorkspaceSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
     void handleCompletionResolve(const Json &id, const Json &item);
     void handleCodeAction(const Json &id, const Json &params);
@@ -65,10 +66,21 @@ private:
     void onFormatFinished(BaaFormatResult result);
     void onSemanticFinished(BaaSemanticResult result);
     void requestSymbolsForDocument(const BaaDocument &document, const Json *requestId);
+    void requestSymbols(std::string uri,
+                        std::string filePath,
+                        std::string text,
+                        int version,
+                        bool requireOpenDocument,
+                        bool workspaceIndex,
+                        const Json *requestId = nullptr);
+    void resolveWorkspaceSymbolRequests();
+    Json workspaceSymbolResult(const std::string &query);
     void completeRequest(const Json &id, const std::string &uri, int version,
                          int line, int character);
     void invalidateSymbolRequests(const std::string &uri, int code,
                                   const std::string &message);
+    void invalidateWorkspaceSymbolRequests(int code,
+                                           const std::string &message);
     void invalidateCompletionRequests(const std::string &uri, int code,
                                       const std::string &message);
     void invalidateFormatRequests(const std::string &uri, int code,
@@ -96,6 +108,8 @@ private:
         std::vector<Json> ids;
         std::string uri;
         int version{};
+        bool requireOpenDocument{true};
+        bool workspaceIndex{};
     };
     struct CachedSymbols
     {
@@ -107,6 +121,29 @@ private:
     std::unordered_map<std::uint64_t, PendingSymbolRequest> m_symbolRequests;
     std::unordered_map<std::string, CachedSymbols> m_symbolCache;
     std::uint64_t m_nextSymbolToken{1};
+    struct WorkspaceSymbolIndexEntry
+    {
+        int version{};
+        bool openDocument{};
+        Json symbols = Json::array();
+        std::string errorMessage;
+    };
+    struct WorkspaceSymbolSourceVersion
+    {
+        std::string uri;
+        int version{};
+        bool openDocument{};
+    };
+    struct PendingWorkspaceSymbolRequest
+    {
+        Json id;
+        std::string query;
+        std::vector<WorkspaceSymbolSourceVersion> sources;
+    };
+    std::unordered_map<std::string, WorkspaceSymbolIndexEntry>
+        m_workspaceSymbolIndex;
+    std::vector<PendingWorkspaceSymbolRequest>
+        m_pendingWorkspaceSymbolRequests;
     enum class CompletionDataState { NotRequested, Loading, Ready, Failed };
     struct PendingCompletionRequest
     {

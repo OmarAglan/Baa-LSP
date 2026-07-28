@@ -23,7 +23,9 @@
     documentation without adding a parser or semantic table to Baa-LSP.
 - [x] Implement compiler-backed hover and signature help with UTF-16 ranges,
   active parameters, cancellation, version checks, and incomplete-call coverage.
-- [ ] Add workspace symbol indexing without duplicating Baa semantics.
+- [x] Add cached `workspace/symbol` indexing from Takween's source closure and
+  Baa's `symbols-json-v1`, including unsaved-document overlays, cancellation,
+  deterministic results, and visible partial-index failures.
 
 ## 0.3 — Navigation and safe editing
 

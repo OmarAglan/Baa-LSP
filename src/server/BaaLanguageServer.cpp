@@ -481,6 +481,61 @@ Json buildCompletionItems(std::string_view text,
     }
     return result;
 }
+
+void appendWorkspaceSymbols(Json &output,
+                            std::string_view uri,
+                            std::string_view text,
+                            const Json &symbols,
+                            std::string_view container)
+{
+    if (not symbols.is_array()) return;
+    for (const Json &symbol : symbols) {
+        if (not symbol.is_object()) continue;
+        const std::string name = symbol.value("name", "");
+        const std::string baaKind = symbol.value("kind", "");
+        if (name.empty()) continue;
+
+        const Json converted = PositionEncoding::baaSymbolsToLsp(
+            text, Json::array({symbol}));
+        if (baaKind != "parameter" and converted.is_array() and
+            not converted.empty() and converted.front().is_object()) {
+            const Json &documentSymbol = converted.front();
+            const Json range = documentSymbol.value(
+                "selectionRange", Json::object());
+            if (range.is_object() and range.contains("start") and
+                range.contains("end")) {
+                Json data{{"baaKind", baaKind}};
+                const std::string detail =
+                    documentSymbol.value("detail", "");
+                if (not detail.empty()) data["detail"] = detail;
+                Json item{
+                    {"name", name},
+                    {"kind", documentSymbol.value("kind", 13)},
+                    {"location", {
+                        {"uri", std::string(uri)},
+                        {"range", range}
+                    }},
+                    {"data", std::move(data)}
+                };
+                if (not container.empty())
+                    item["containerName"] = std::string(container);
+                output.push_back(std::move(item));
+            }
+        }
+
+        appendWorkspaceSymbols(
+            output,
+            uri,
+            text,
+            symbol.value("children", Json::array()),
+            name);
+    }
+}
+
+bool workspaceSymbolMatches(std::string_view name, std::string_view query)
+{
+    return query.empty() or name.find(query) != std::string_view::npos;
+}
 }
 
 BaaLanguageServer::BaaLanguageServer()
@@ -545,6 +600,11 @@ void BaaLanguageServer::setExitCallback(ExitCallback callback)
 void BaaLanguageServer::loadProjectPlan(const Json &initializeParams)
 {
     m_projectPlan = {};
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        m_workspaceSymbolIndex.clear();
+        m_pendingWorkspaceSymbolRequests.clear();
+    }
     std::string rootUri = stringValue(initializeParams, "rootUri");
     if (rootUri.empty()) {
         const auto folders = initializeParams.find("workspaceFolders");
@@ -719,6 +779,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
                     {"save", {{"includeText", false}}}
                 }},
                 {"documentSymbolProvider", true},
+                {"workspaceSymbolProvider", true},
                 {"hoverProvider", true},
                 {"definitionProvider", true},
                 {"referencesProvider", true},
@@ -755,6 +816,8 @@ void BaaLanguageServer::handleRequest(const Json &message)
     if (method == "shutdown") {
         m_shutdownRequested = true;
         invalidateSymbolRequests({}, RequestCancelled, "Request cancelled during shutdown.");
+        invalidateWorkspaceSymbolRequests(
+            RequestCancelled, "Workspace symbol request cancelled during shutdown.");
         invalidateCompletionRequests({}, RequestCancelled,
                                      "Request cancelled during shutdown.");
         invalidateFormatRequests({}, RequestCancelled,
@@ -776,6 +839,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/documentSymbol") {
         handleDocumentSymbol(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "workspace/symbol") {
+        handleWorkspaceSymbol(id, objectValue(message, "params"));
         return;
     }
     if (method == "textDocument/completion") {
@@ -869,6 +936,17 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
             return;
         }
     }
+    invalidateSymbolRequests(
+        document.uri,
+        ContentModified,
+        "Document opened before workspace symbols were ready.");
+    invalidateWorkspaceSymbolRequests(
+        ContentModified,
+        "Workspace symbols became obsolete after a document opened.");
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        m_workspaceSymbolIndex.erase(document.uri);
+    }
     analyze(document);
 }
 
@@ -898,6 +976,9 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     }
     invalidateSymbolRequests(uri, ContentModified,
                              "Document changed before symbols were ready.");
+    invalidateWorkspaceSymbolRequests(
+        ContentModified,
+        "Workspace symbols became obsolete after a document change.");
     invalidateCompletionRequests(uri, ContentModified,
                                  "Document changed before completion was ready.");
     invalidateFormatRequests(uri, ContentModified,
@@ -907,6 +988,7 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     {
         std::scoped_lock lock(m_symbolRequestsMutex);
         m_symbolCache.erase(uri);
+        m_workspaceSymbolIndex.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -934,6 +1016,9 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     if (uri.empty()) return;
     invalidateSymbolRequests(uri, ContentModified,
                              "Document closed before symbols were ready.");
+    invalidateWorkspaceSymbolRequests(
+        ContentModified,
+        "Workspace symbols became obsolete after a document closed.");
     invalidateCompletionRequests(uri, ContentModified,
                                  "Document closed before completion was ready.");
     invalidateFormatRequests(uri, ContentModified,
@@ -948,6 +1033,7 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     {
         std::scoped_lock lock(m_symbolRequestsMutex);
         m_symbolCache.erase(uri);
+        m_workspaceSymbolIndex.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -991,6 +1077,131 @@ void BaaLanguageServer::handleDocumentSymbol(const Json &id, const Json &params)
     requestSymbolsForDocument(document, &id);
 }
 
+void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
+                                              const Json &params)
+{
+    const auto query = params.find("query");
+    if (query == params.end() or not query->is_string()) {
+        sendError(id, InvalidParams, "workspace/symbol requires a string query.");
+        return;
+    }
+
+    struct WorkspaceSource
+    {
+        std::string uri;
+        std::string filePath;
+        std::string text;
+        int version{};
+        bool openDocument{};
+    };
+
+    std::vector<BaaDocument> openDocuments;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        openDocuments = m_documents.documents();
+    }
+    std::unordered_map<std::string, BaaDocument> openByPath;
+    for (const BaaDocument &document : openDocuments) {
+        const std::string path = localPathForUri(document.uri);
+        if (path.empty()) continue;
+        const std::string comparable = comparablePath(pathFromUtf8(path));
+        if (not comparable.empty())
+            openByPath.insert_or_assign(comparable, document);
+    }
+
+    std::vector<WorkspaceSource> sources;
+    std::unordered_set<std::string> seenUris;
+    auto appendSource = [&](const std::filesystem::path &sourcePath) -> bool {
+        const std::string path = utf8FromPath(sourcePath);
+        const std::string comparable = comparablePath(sourcePath);
+        const auto open = openByPath.find(comparable);
+        WorkspaceSource source;
+        source.filePath = path;
+        if (open != openByPath.end()) {
+            source.uri = open->second.uri;
+            source.text = open->second.text;
+            source.version = open->second.version;
+            source.openDocument = true;
+        } else {
+            source.uri = fileUriForPath(sourcePath);
+            const std::optional<std::string> text = readUtf8File(sourcePath);
+            if (source.uri.empty() or not text) return false;
+            source.text = *text;
+        }
+        if (seenUris.insert(source.uri).second)
+            sources.push_back(std::move(source));
+        return true;
+    };
+
+    if (m_projectPlan.loaded) {
+        for (const std::filesystem::path &source : m_projectPlan.sourceFiles) {
+            if (not appendSource(source)) {
+                sendError(
+                    id,
+                    InternalError,
+                    "A Takween project source could not be read for workspace symbols.");
+                return;
+            }
+        }
+    } else {
+        for (const BaaDocument &document : openDocuments) {
+            const std::string pathText = localPathForUri(document.uri);
+            if (pathText.empty()) continue;
+            const std::filesystem::path path = pathFromUtf8(pathText);
+            if (path.extension() != ".baa" and path.extension() != ".baahd")
+                continue;
+            if (seenUris.insert(document.uri).second) {
+                sources.push_back({
+                    document.uri,
+                    pathText,
+                    document.text,
+                    document.version,
+                    true
+                });
+            }
+        }
+    }
+
+    if (sources.empty()) {
+        sendResult(id, Json::array());
+        return;
+    }
+
+    PendingWorkspaceSymbolRequest pending;
+    pending.id = id;
+    pending.query = query->get<std::string>();
+    std::vector<WorkspaceSource> missing;
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        for (const WorkspaceSource &source : sources) {
+            pending.sources.push_back(
+                {source.uri, source.version, source.openDocument});
+            const auto indexed = m_workspaceSymbolIndex.find(source.uri);
+            if (indexed == m_workspaceSymbolIndex.end() or
+                indexed->second.version != source.version or
+                indexed->second.openDocument != source.openDocument) {
+                missing.push_back(source);
+            }
+        }
+        if (not missing.empty())
+            m_pendingWorkspaceSymbolRequests.push_back(std::move(pending));
+    }
+
+    if (missing.empty()) {
+        sendResult(id, workspaceSymbolResult(query->get<std::string>()));
+        return;
+    }
+    for (WorkspaceSource &source : missing) {
+        requestSymbols(
+            std::move(source.uri),
+            std::move(source.filePath),
+            std::move(source.text),
+            source.version,
+            source.openDocument,
+            true);
+    }
+}
+
 void BaaLanguageServer::requestSymbolsForDocument(const BaaDocument &document,
                                                   const Json *requestId)
 {
@@ -1002,26 +1213,55 @@ void BaaLanguageServer::requestSymbolsForDocument(const BaaDocument &document,
         }
         return;
     }
+    requestSymbols(
+        document.uri,
+        path,
+        document.text,
+        document.version,
+        true,
+        false,
+        requestId);
+}
 
+void BaaLanguageServer::requestSymbols(std::string uri,
+                                       std::string filePath,
+                                       std::string text,
+                                       int version,
+                                       bool requireOpenDocument,
+                                       bool workspaceIndex,
+                                       const Json *requestId)
+{
     std::uint64_t token{};
     {
         std::scoped_lock lock(m_symbolRequestsMutex);
         for (auto &[existingToken, pending] : m_symbolRequests) {
-            if (pending.uri == document.uri and pending.version == document.version) {
+            if (pending.uri == uri and pending.version == version and
+                pending.requireOpenDocument == requireOpenDocument) {
                 if (requestId) pending.ids.push_back(*requestId);
+                pending.workspaceIndex =
+                    pending.workspaceIndex or workspaceIndex;
                 return;
             }
         }
         token = m_nextSymbolToken++;
         if (token == 0) token = m_nextSymbolToken++;
         PendingSymbolRequest pending;
-        pending.uri = document.uri;
-        pending.version = document.version;
+        pending.uri = uri;
+        pending.version = version;
+        pending.requireOpenDocument = requireOpenDocument;
+        pending.workspaceIndex = workspaceIndex;
         if (requestId) pending.ids.push_back(*requestId);
         m_symbolRequests.emplace(token, std::move(pending));
     }
-    m_compiler.requestSymbols(
-        {token, document.uri, path, document.text, document.version});
+    BaaSymbolRequest request;
+    request.token = token;
+    request.uri = std::move(uri);
+    request.filePath = std::move(filePath);
+    request.text = std::move(text);
+    request.version = version;
+    request.includePaths = m_projectPlan.includePaths;
+    request.requireLatestVersion = requireOpenDocument;
+    m_compiler.requestSymbols(std::move(request));
 }
 
 void BaaLanguageServer::handleCompletion(const Json &id, const Json &params)
@@ -1511,6 +1751,18 @@ void BaaLanguageServer::handleCancelRequest(const Json &params)
         }
     }
     if (not cancelled) {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        const auto match = std::ranges::find_if(
+            m_pendingWorkspaceSymbolRequests,
+            [&idIt](const PendingWorkspaceSymbolRequest &request) {
+                return request.id == *idIt;
+            });
+        if (match != m_pendingWorkspaceSymbolRequests.end()) {
+            m_pendingWorkspaceSymbolRequests.erase(match);
+            cancelled = true;
+        }
+    }
+    if (not cancelled) {
         std::scoped_lock lock(m_completionMutex);
         const auto match = std::ranges::find_if(
             m_pendingCompletionRequests,
@@ -1646,8 +1898,8 @@ void BaaLanguageServer::onSymbolsFinished(BaaSymbolResult result)
         m_symbolRequests.erase(it);
     }
 
-    bool current = false;
-    {
+    bool current = not pending.requireOpenDocument;
+    if (pending.requireOpenDocument) {
         std::scoped_lock lock(m_documentsMutex);
         current = m_documents.contains(pending.uri) and
                   m_documents.document(pending.uri).version == pending.version;
@@ -1663,16 +1915,130 @@ void BaaLanguageServer::onSymbolsFinished(BaaSymbolResult result)
         for (const Json &id : pending.ids) {
             sendError(id, InternalError, result.errorMessage);
         }
+        if (pending.workspaceIndex) {
+            {
+                std::scoped_lock lock(m_symbolRequestsMutex);
+                m_workspaceSymbolIndex.insert_or_assign(
+                    pending.uri,
+                    WorkspaceSymbolIndexEntry{
+                        pending.version,
+                        pending.requireOpenDocument,
+                        Json::array(),
+                        result.errorMessage
+                    });
+            }
+            sendLogMessage(
+                "Workspace symbols skipped one Baa source: " +
+                result.errorMessage,
+                2);
+            resolveWorkspaceSymbolRequests();
+        }
         return;
     }
-    {
+    if (pending.requireOpenDocument) {
         std::scoped_lock lock(m_symbolRequestsMutex);
         m_symbolCache.insert_or_assign(
             pending.uri,
             CachedSymbols{pending.version, result.text, result.symbols});
     }
+    if (pending.workspaceIndex) {
+        Json workspaceSymbols = Json::array();
+        appendWorkspaceSymbols(
+            workspaceSymbols,
+            pending.uri,
+            result.text,
+            result.symbols,
+            {});
+        {
+            std::scoped_lock lock(m_symbolRequestsMutex);
+            m_workspaceSymbolIndex.insert_or_assign(
+                pending.uri,
+                WorkspaceSymbolIndexEntry{
+                    pending.version,
+                    pending.requireOpenDocument,
+                    std::move(workspaceSymbols),
+                    {}
+                });
+        }
+    }
     const Json converted = PositionEncoding::baaSymbolsToLsp(result.text, result.symbols);
     for (const Json &id : pending.ids) sendResult(id, converted);
+    if (pending.workspaceIndex) resolveWorkspaceSymbolRequests();
+}
+
+Json BaaLanguageServer::workspaceSymbolResult(const std::string &query)
+{
+    Json result = Json::array();
+    std::unordered_set<std::string> seen;
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        for (const auto &[uri, entry] : m_workspaceSymbolIndex) {
+            (void)uri;
+            if (not entry.symbols.is_array()) continue;
+            for (const Json &symbol : entry.symbols) {
+                if (not symbol.is_object()) continue;
+                const std::string name = symbol.value("name", "");
+                if (name.empty() or
+                    not workspaceSymbolMatches(name, query))
+                    continue;
+                const std::string key =
+                    name + "\n" +
+                    symbol.value("containerName", "") + "\n" +
+                    symbol.value("location", Json::object()).dump();
+                if (seen.insert(key).second) result.push_back(symbol);
+            }
+        }
+    }
+    std::vector<Json> sorted(result.begin(), result.end());
+    std::ranges::sort(sorted, [](const Json &left, const Json &right) {
+        const std::string leftName = left.value("name", "");
+        const std::string rightName = right.value("name", "");
+        if (leftName != rightName) return leftName < rightName;
+        const std::string leftContainer =
+            left.value("containerName", "");
+        const std::string rightContainer =
+            right.value("containerName", "");
+        if (leftContainer != rightContainer)
+            return leftContainer < rightContainer;
+        return left.value("location", Json::object()).dump() <
+               right.value("location", Json::object()).dump();
+    });
+    result = Json::array();
+    for (Json &symbol : sorted) result.push_back(std::move(symbol));
+    return result;
+}
+
+void BaaLanguageServer::resolveWorkspaceSymbolRequests()
+{
+    std::vector<std::pair<Json, std::string>> ready;
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        for (auto request = m_pendingWorkspaceSymbolRequests.begin();
+             request != m_pendingWorkspaceSymbolRequests.end();) {
+            bool complete = true;
+            for (const WorkspaceSymbolSourceVersion &source :
+                 request->sources) {
+                const auto indexed =
+                    m_workspaceSymbolIndex.find(source.uri);
+                if (indexed == m_workspaceSymbolIndex.end() or
+                    indexed->second.version != source.version or
+                    indexed->second.openDocument != source.openDocument) {
+                    complete = false;
+                    break;
+                }
+            }
+            if (not complete) {
+                ++request;
+                continue;
+            }
+            ready.emplace_back(
+                std::move(request->id),
+                std::move(request->query));
+            request = m_pendingWorkspaceSymbolRequests.erase(request);
+        }
+    }
+    for (auto &[id, query] : ready)
+        sendResult(id, workspaceSymbolResult(query));
 }
 
 void BaaLanguageServer::onCompletionDataFinished(BaaCompletionDataResult result)
@@ -2072,6 +2438,23 @@ void BaaLanguageServer::invalidateSymbolRequests(const std::string &uri,
         m_compiler.cancelSymbols(request.token);
         for (const Json &id : request.ids) sendError(id, code, message);
     }
+}
+
+void BaaLanguageServer::invalidateWorkspaceSymbolRequests(
+    int code,
+    const std::string &message)
+{
+    std::vector<Json> ids;
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        ids.reserve(m_pendingWorkspaceSymbolRequests.size());
+        for (PendingWorkspaceSymbolRequest &request :
+             m_pendingWorkspaceSymbolRequests) {
+            ids.push_back(std::move(request.id));
+        }
+        m_pendingWorkspaceSymbolRequests.clear();
+    }
+    for (const Json &id : ids) sendError(id, code, message);
 }
 
 void BaaLanguageServer::invalidateSemanticRequests(const std::string &uri,

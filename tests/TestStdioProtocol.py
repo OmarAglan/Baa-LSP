@@ -57,6 +57,7 @@ def main():
         assert response["id"] == 1
         assert response["result"]["capabilities"]["positionEncoding"] == "utf-16"
         assert response["result"]["capabilities"]["documentSymbolProvider"] is True
+        assert response["result"]["capabilities"]["workspaceSymbolProvider"] is True
         assert response["result"]["capabilities"]["hoverProvider"] is True
         assert response["result"]["capabilities"]["definitionProvider"] is True
         assert response["result"]["capabilities"]["referencesProvider"] is True
@@ -173,6 +174,28 @@ def main():
             "start": {"line": 0, "character": 5},
             "end": {"line": 0, "character": 13},
         }
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 19, "method": "workspace/symbol",
+            "params": {"query": "الرئ"},
+        })
+        workspace_symbols = read_response(process, 19)["result"]
+        assert len(workspace_symbols) == 1
+        assert workspace_symbols[0]["name"] == "الرئيسية"
+        assert workspace_symbols[0]["kind"] == 12
+        assert workspace_symbols[0]["location"] == {
+            "uri": uri,
+            "range": {
+                "start": {"line": 0, "character": 5},
+                "end": {"line": 0, "character": 13},
+            },
+        }
+        assert workspace_symbols[0]["data"]["baaKind"] == "function"
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 20, "method": "workspace/symbol",
+            "params": {"query": "غير_موجود"},
+        })
+        assert read_response(process, 20)["result"] == []
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 5, "method": "textDocument/completion",
