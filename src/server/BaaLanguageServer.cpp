@@ -544,6 +544,8 @@ BaaLanguageServer::BaaLanguageServer()
         [this](BaaAnalysisResult result) { onAnalysisFinished(std::move(result)); });
     m_compiler.setSymbolCallback(
         [this](BaaSymbolResult result) { onSymbolsFinished(std::move(result)); });
+    m_compiler.setTokenCallback(
+        [this](BaaTokenResult result) { onTokensFinished(std::move(result)); });
     m_compiler.setCompletionDataCallback(
         [this](BaaCompletionDataResult result) {
             onCompletionDataFinished(std::move(result));
@@ -558,6 +560,7 @@ BaaLanguageServer::~BaaLanguageServer()
 {
     m_compiler.setAnalysisCallback({});
     m_compiler.setSymbolCallback({});
+    m_compiler.setTokenCallback({});
     m_compiler.setCompletionDataCallback({});
     m_compiler.setFormatCallback({});
     m_compiler.setSemanticCallback({});
@@ -779,6 +782,22 @@ void BaaLanguageServer::handleRequest(const Json &message)
                     {"save", {{"includeText", false}}}
                 }},
                 {"documentSymbolProvider", true},
+                {"semanticTokensProvider", {
+                    {"legend", {
+                        {"tokenTypes", Json::array({
+                            "type",
+                            "macro",
+                            "keyword",
+                            "modifier",
+                            "comment",
+                            "string",
+                            "number",
+                            "operator"
+                        })},
+                        {"tokenModifiers", Json::array()}
+                    }},
+                    {"full", true}
+                }},
                 {"workspaceSymbolProvider", true},
                 {"hoverProvider", true},
                 {"definitionProvider", true},
@@ -816,6 +835,8 @@ void BaaLanguageServer::handleRequest(const Json &message)
     if (method == "shutdown") {
         m_shutdownRequested = true;
         invalidateSymbolRequests({}, RequestCancelled, "Request cancelled during shutdown.");
+        invalidateTokenRequests({}, RequestCancelled,
+                                "Semantic tokens request cancelled during shutdown.");
         invalidateWorkspaceSymbolRequests(
             RequestCancelled, "Workspace symbol request cancelled during shutdown.");
         invalidateCompletionRequests({}, RequestCancelled,
@@ -839,6 +860,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/documentSymbol") {
         handleDocumentSymbol(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "textDocument/semanticTokens/full") {
+        handleSemanticTokensFull(id, objectValue(message, "params"));
         return;
     }
     if (method == "workspace/symbol") {
@@ -940,6 +965,14 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
         document.uri,
         ContentModified,
         "Document opened before workspace symbols were ready.");
+    invalidateTokenRequests(
+        document.uri,
+        ContentModified,
+        "Document opened before semantic tokens were ready.");
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        m_tokenCache.erase(document.uri);
+    }
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document opened.");
@@ -976,6 +1009,8 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     }
     invalidateSymbolRequests(uri, ContentModified,
                              "Document changed before symbols were ready.");
+    invalidateTokenRequests(uri, ContentModified,
+                            "Document changed before semantic tokens were ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document change.");
@@ -989,6 +1024,10 @@ void BaaLanguageServer::handleDidChange(const Json &params)
         std::scoped_lock lock(m_symbolRequestsMutex);
         m_symbolCache.erase(uri);
         m_workspaceSymbolIndex.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        m_tokenCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1016,6 +1055,8 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     if (uri.empty()) return;
     invalidateSymbolRequests(uri, ContentModified,
                              "Document closed before symbols were ready.");
+    invalidateTokenRequests(uri, ContentModified,
+                            "Document closed before semantic tokens were ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document closed.");
@@ -1034,6 +1075,10 @@ void BaaLanguageServer::handleDidClose(const Json &params)
         std::scoped_lock lock(m_symbolRequestsMutex);
         m_symbolCache.erase(uri);
         m_workspaceSymbolIndex.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        m_tokenCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1075,6 +1120,77 @@ void BaaLanguageServer::handleDocumentSymbol(const Json &id, const Json &params)
         return;
     }
     requestSymbolsForDocument(document, &id);
+}
+
+void BaaLanguageServer::handleSemanticTokensFull(const Json &id,
+                                                 const Json &params)
+{
+    const std::string uri =
+        stringValue(objectValue(params, "textDocument"), "uri");
+    if (uri.empty()) {
+        sendError(id, InvalidParams, "textDocument.uri is required.");
+        return;
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(uri)) {
+            sendError(id, InvalidParams, "Document is not open in Baa-LSP.");
+            return;
+        }
+        document = m_documents.document(uri);
+    }
+
+    Json cached;
+    std::string cachedText;
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        const auto it = m_tokenCache.find(uri);
+        if (it != m_tokenCache.end() and
+            it->second.version == document.version) {
+            cached = it->second.tokens;
+            cachedText = it->second.text;
+        }
+    }
+    if (cached.is_array()) {
+        sendResult(
+            id,
+            {{"data", PositionEncoding::baaTokensToLspData(
+                cachedText, cached)}});
+        return;
+    }
+
+    const std::string path = localPathForUri(uri);
+    if (path.empty()) {
+        sendError(id, InvalidParams,
+                  "Baa-LSP supports local file:// documents only.");
+        return;
+    }
+
+    std::uint64_t token{};
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        for (auto &[existingToken, pending] : m_tokenRequests) {
+            if (pending.uri == uri and pending.version == document.version) {
+                pending.ids.push_back(id);
+                return;
+            }
+        }
+        token = m_nextTokenToken++;
+        if (token == 0) token = m_nextTokenToken++;
+        m_tokenRequests.emplace(
+            token,
+            PendingTokenRequest{{id}, uri, document.version});
+    }
+
+    m_compiler.requestTokens({
+        token,
+        uri,
+        path,
+        document.text,
+        document.version
+    });
 }
 
 void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
@@ -1774,6 +1890,25 @@ void BaaLanguageServer::handleCancelRequest(const Json &params)
             cancelled = true;
         }
     }
+    std::uint64_t tokenRequestToCancel = 0;
+    if (not cancelled) {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        for (auto request = m_tokenRequests.begin();
+             request != m_tokenRequests.end(); ++request) {
+            const auto match =
+                std::ranges::find(request->second.ids, *idIt);
+            if (match == request->second.ids.end()) continue;
+            request->second.ids.erase(match);
+            cancelled = true;
+            if (request->second.ids.empty()) {
+                tokenRequestToCancel = request->first;
+                m_tokenRequests.erase(request);
+            }
+            break;
+        }
+    }
+    if (tokenRequestToCancel != 0)
+        m_compiler.cancelTokens(tokenRequestToCancel);
     std::uint64_t formatTokenToCancel = 0;
     if (not cancelled) {
         std::scoped_lock lock(m_formatMutex);
@@ -1964,6 +2099,49 @@ void BaaLanguageServer::onSymbolsFinished(BaaSymbolResult result)
     const Json converted = PositionEncoding::baaSymbolsToLsp(result.text, result.symbols);
     for (const Json &id : pending.ids) sendResult(id, converted);
     if (pending.workspaceIndex) resolveWorkspaceSymbolRequests();
+}
+
+void BaaLanguageServer::onTokensFinished(BaaTokenResult result)
+{
+    PendingTokenRequest pending;
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        const auto request = m_tokenRequests.find(result.token);
+        if (request == m_tokenRequests.end()) return;
+        pending = std::move(request->second);
+        m_tokenRequests.erase(request);
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(pending.uri) or
+            m_documents.document(pending.uri).version != pending.version) {
+            for (const Json &id : pending.ids) {
+                sendError(id, ContentModified,
+                          "Document changed before semantic tokens were ready.");
+            }
+            return;
+        }
+        document = m_documents.document(pending.uri);
+    }
+    if (not result.errorMessage.empty()) {
+        for (const Json &id : pending.ids)
+            sendError(id, InternalError, result.errorMessage);
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        m_tokenCache.insert_or_assign(
+            pending.uri,
+            CachedTokens{pending.version, result.text, result.tokens});
+    }
+    const Json converted = {
+        {"data", PositionEncoding::baaTokensToLspData(
+            result.text, result.tokens)}
+    };
+    for (const Json &id : pending.ids) sendResult(id, converted);
 }
 
 Json BaaLanguageServer::workspaceSymbolResult(const std::string &query)
@@ -2436,6 +2614,35 @@ void BaaLanguageServer::invalidateSymbolRequests(const std::string &uri,
     }
     for (const CancelledRequest &request : cancelled) {
         m_compiler.cancelSymbols(request.token);
+        for (const Json &id : request.ids) sendError(id, code, message);
+    }
+}
+
+void BaaLanguageServer::invalidateTokenRequests(const std::string &uri,
+                                                int code,
+                                                const std::string &message)
+{
+    struct CancelledRequest
+    {
+        std::uint64_t token{};
+        std::vector<Json> ids;
+    };
+    std::vector<CancelledRequest> cancelled;
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        for (auto request = m_tokenRequests.begin();
+             request != m_tokenRequests.end();) {
+            if (uri.empty() or request->second.uri == uri) {
+                cancelled.push_back(
+                    {request->first, std::move(request->second.ids)});
+                request = m_tokenRequests.erase(request);
+            } else {
+                ++request;
+            }
+        }
+    }
+    for (const CancelledRequest &request : cancelled) {
+        m_compiler.cancelTokens(request.token);
         for (const Json &id : request.ids) sendError(id, code, message);
     }
 }

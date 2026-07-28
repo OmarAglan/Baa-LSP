@@ -64,6 +64,12 @@ def main():
         })
         initialized = read_response(process, 1)
         assert initialized["result"]["capabilities"]["documentSymbolProvider"] is True
+        semantic_provider = initialized["result"]["capabilities"]["semanticTokensProvider"]
+        assert semantic_provider["full"] is True
+        assert semantic_provider["legend"]["tokenTypes"] == [
+            "type", "macro", "keyword", "modifier",
+            "comment", "string", "number", "operator",
+        ]
         assert initialized["result"]["capabilities"]["hoverProvider"] is True
         assert initialized["result"]["capabilities"]["definitionProvider"] is True
         assert initialized["result"]["capabilities"]["referencesProvider"] is True
@@ -80,6 +86,32 @@ def main():
         assert diagnostics["method"] == "textDocument/publishDiagnostics"
         assert diagnostics["params"]["version"] == 1
         assert diagnostics["params"]["diagnostics"] == []
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 19,
+            "method": "textDocument/semanticTokens/full",
+            "params": {"textDocument": {"uri": uri}},
+        })
+        token_data = read_response(process, 19)["result"]["data"]
+        assert len(token_data) % 5 == 0
+        decoded_tokens = []
+        token_line = 0
+        token_character = 0
+        for index in range(0, len(token_data), 5):
+            delta_line, delta_character, length, token_type, modifiers = (
+                token_data[index:index + 5]
+            )
+            token_line += delta_line
+            token_character = (
+                token_character + delta_character
+                if delta_line == 0 else delta_character
+            )
+            decoded_tokens.append(
+                (token_line, token_character, length, token_type, modifiers)
+            )
+        assert (0, 0, 4, 0, 0) in decoded_tokens
+        assert any(token[0] == 0 and token[3] == 7 for token in decoded_tokens)
+        assert any(token[0] == 2 and token[3] == 6 for token in decoded_tokens)
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",

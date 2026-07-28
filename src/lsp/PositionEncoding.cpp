@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <vector>
 
 namespace {
 std::size_t clampedUtf8Boundary(std::string_view text, std::size_t offset)
@@ -76,6 +77,19 @@ int symbolKind(const Json &symbol)
     if (kind == "struct" or kind == "union") return 23;
     if (kind == "field") return 8;
     return 13;
+}
+
+int semanticTokenType(const std::string &kind)
+{
+    if (kind == "type") return 0;
+    if (kind == "directive") return 1;
+    if (kind == "keyword") return 2;
+    if (kind == "modifier") return 3;
+    if (kind == "comment") return 4;
+    if (kind == "string" or kind == "character") return 5;
+    if (kind == "number") return 6;
+    if (kind == "operator") return 7;
+    return -1;
 }
 
 std::string typeDisplay(const Json &symbol, std::string_view field)
@@ -345,6 +359,117 @@ Json PositionEncoding::baaDiagnosticsToLsp(std::string_view text, const Json &di
         converted.push_back(std::move(result));
     }
     return converted;
+}
+
+Json PositionEncoding::baaTokensToLspData(std::string_view text,
+                                          const Json &tokens)
+{
+    struct RawSegment
+    {
+        std::size_t start{};
+        std::size_t end{};
+        int type{};
+    };
+    struct SemanticToken
+    {
+        int line{};
+        int character{};
+        int length{};
+        int type{};
+    };
+
+    std::vector<RawSegment> segments;
+    if (not tokens.is_array()) return Json::array();
+    for (const Json &token : tokens) {
+        if (not token.is_object()) continue;
+        const int type = semanticTokenType(token.value("kind", ""));
+        if (type < 0) continue;
+        const Json span = token.value("span", Json::object());
+        const Json rawStart = span.value("start", Json::object());
+        const Json rawEnd = span.value("end", Json::object());
+        const std::int64_t startValue = integerValue(rawStart, "byte", -1);
+        const std::int64_t endValue = integerValue(rawEnd, "byte", -1);
+        if (startValue < 0 or endValue <= startValue) continue;
+        std::size_t segmentStart = static_cast<std::size_t>(startValue);
+        const std::size_t tokenEnd = static_cast<std::size_t>(endValue);
+        if (segmentStart >= text.size() or tokenEnd > text.size()) continue;
+
+        while (segmentStart < tokenEnd) {
+            const std::size_t newline = text.find('\n', segmentStart);
+            std::size_t segmentEnd =
+                newline == std::string_view::npos or newline >= tokenEnd
+                    ? tokenEnd
+                    : newline;
+            if (segmentEnd > segmentStart and text[segmentEnd - 1] == '\r')
+                --segmentEnd;
+            if (segmentEnd > segmentStart)
+                segments.push_back({segmentStart, segmentEnd, type});
+            if (newline == std::string_view::npos or newline >= tokenEnd)
+                break;
+            segmentStart = newline + 1;
+        }
+    }
+
+    std::ranges::sort(segments, [](const RawSegment &left,
+                                  const RawSegment &right) {
+        if (left.start != right.start) return left.start < right.start;
+        if (left.end != right.end) return left.end < right.end;
+        return left.type < right.type;
+    });
+
+    std::vector<SemanticToken> converted;
+    converted.reserve(segments.size());
+    std::size_t scanOffset = 0;
+    int scanLine = 0;
+    int scanCharacter = 0;
+    auto advanceTo = [&](std::size_t target) {
+        target = std::min(target, text.size());
+        while (scanOffset < target) {
+            if (text[scanOffset] == '\n') {
+                ++scanLine;
+                scanCharacter = 0;
+                ++scanOffset;
+                continue;
+            }
+            const auto [codePoint, length] = decodeUtf8(text, scanOffset);
+            scanCharacter += codePoint > 0xFFFFu ? 2 : 1;
+            scanOffset += std::min(length, target - scanOffset);
+        }
+    };
+    for (const RawSegment &segment : segments) {
+        if (segment.start < scanOffset) continue;
+        advanceTo(segment.start);
+        const int startLine = scanLine;
+        const int startCharacter = scanCharacter;
+        advanceTo(segment.end);
+        if (scanLine == startLine and scanCharacter > startCharacter) {
+            converted.push_back({
+                startLine,
+                startCharacter,
+                scanCharacter - startCharacter,
+                segment.type
+            });
+        }
+    }
+
+    Json data = Json::array();
+    int previousLine = 0;
+    int previousCharacter = 0;
+    for (const SemanticToken &token : converted) {
+        const int deltaLine = token.line - previousLine;
+        const int deltaCharacter = deltaLine == 0
+            ? token.character - previousCharacter
+            : token.character;
+        if (deltaLine < 0 or deltaCharacter < 0) continue;
+        data.push_back(deltaLine);
+        data.push_back(deltaCharacter);
+        data.push_back(token.length);
+        data.push_back(token.type);
+        data.push_back(0);
+        previousLine = token.line;
+        previousCharacter = token.character;
+    }
+    return data;
 }
 
 Json PositionEncoding::baaSymbolsToLsp(std::string_view text, const Json &symbols)

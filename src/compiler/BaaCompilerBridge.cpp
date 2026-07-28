@@ -26,6 +26,83 @@ std::string pathToUtf8(const std::filesystem::path &path)
     const std::u8string encoded = path.u8string();
     return {reinterpret_cast<const char *>(encoded.data()), encoded.size()};
 }
+
+bool nonnegativeSize(const Json &value, std::size_t *result)
+{
+    if (value.is_number_unsigned()) {
+        if (result) *result = value.get<std::size_t>();
+        return true;
+    }
+    if (not value.is_number_integer()) return false;
+    const std::int64_t integer = value.get<std::int64_t>();
+    if (integer < 0) return false;
+    if (result) *result = static_cast<std::size_t>(integer);
+    return true;
+}
+
+bool positiveInteger(const Json &value)
+{
+    if (value.is_number_unsigned())
+        return value.get<std::uint64_t>() > 0;
+    return value.is_number_integer() and value.get<std::int64_t>() > 0;
+}
+
+bool stringFieldEquals(const Json &object,
+                       std::string_view key,
+                       std::string_view expected)
+{
+    const auto field = object.find(std::string(key));
+    return field != object.end() and field->is_string() and
+           field->get_ref<const std::string &>() == expected;
+}
+
+bool validTokenKind(std::string_view kind)
+{
+    return kind == "type" or kind == "modifier" or kind == "keyword" or
+           kind == "identifier" or kind == "number" or kind == "string" or
+           kind == "character" or kind == "comment" or kind == "directive" or
+           kind == "operator";
+}
+
+bool validBaaTokens(std::string_view source, const Json &tokens)
+{
+    if (not tokens.is_array()) return false;
+    std::size_t previousEnd = 0;
+    for (const Json &token : tokens) {
+        if (not token.is_object() or
+            not token.value("kind", Json(nullptr)).is_string() or
+            not validTokenKind(token["kind"].get<std::string>()))
+            return false;
+        const Json span = token.value("span", Json(nullptr));
+        if (not span.is_object()) return false;
+        const Json start = span.value("start", Json(nullptr));
+        const Json end = span.value("end", Json(nullptr));
+        if (not start.is_object() or not end.is_object() or
+            not positiveInteger(start.value("line", Json(nullptr))) or
+            not positiveInteger(start.value("column", Json(nullptr))) or
+            not positiveInteger(end.value("line", Json(nullptr))) or
+            not positiveInteger(end.value("column", Json(nullptr))))
+            return false;
+        std::size_t startByte{};
+        std::size_t endByte{};
+        if (not nonnegativeSize(start.value("byte", Json(nullptr)),
+                                &startByte) or
+            not nonnegativeSize(end.value("byte", Json(nullptr)),
+                                &endByte) or
+            startByte < previousEnd or endByte <= startByte or
+            endByte > source.size())
+            return false;
+        if ((startByte < source.size() and
+             (static_cast<unsigned char>(source[startByte]) & 0xC0u) ==
+                 0x80u) or
+            (endByte < source.size() and
+             (static_cast<unsigned char>(source[endByte]) & 0xC0u) ==
+                 0x80u))
+            return false;
+        previousEnd = endByte;
+    }
+    return true;
+}
 }
 
 BaaCompilerBridge::BaaCompilerBridge()
@@ -40,12 +117,14 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_stopping = true;
         m_pending.clear();
         m_pendingSymbols.clear();
+        m_pendingTokens.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
         m_latestVersions.clear();
         m_callback = {};
         m_symbolCallback = {};
+        m_tokenCallback = {};
         m_completionDataCallback = {};
         m_formatCallback = {};
         m_semanticCallback = {};
@@ -85,6 +164,12 @@ void BaaCompilerBridge::setSymbolCallback(SymbolCallback callback)
     m_symbolCallback = std::move(callback);
 }
 
+void BaaCompilerBridge::setTokenCallback(TokenCallback callback)
+{
+    std::scoped_lock lock(m_mutex);
+    m_tokenCallback = std::move(callback);
+}
+
 void BaaCompilerBridge::setCompletionDataCallback(CompletionDataCallback callback)
 {
     std::scoped_lock lock(m_mutex);
@@ -115,6 +200,10 @@ void BaaCompilerBridge::schedule(BaaAnalysisRequest request)
         std::erase_if(m_pendingSymbols, [&request](const BaaSymbolRequest &symbolRequest) {
             return symbolRequest.uri == request.uri and symbolRequest.version != request.version;
         });
+        std::erase_if(m_pendingTokens, [&request](const BaaTokenRequest &tokenRequest) {
+            return tokenRequest.uri == request.uri and
+                   tokenRequest.version != request.version;
+        });
         std::erase_if(m_pendingFormats, [&request](const BaaFormatRequest &formatRequest) {
             return formatRequest.uri == request.uri and
                    formatRequest.version != request.version;
@@ -139,6 +228,19 @@ void BaaCompilerBridge::requestSymbols(BaaSymbolRequest request)
         if (request.requireLatestVersion)
             m_latestVersions.try_emplace(request.uri, request.version);
         m_pendingSymbols.push_back(std::move(request));
+        ++m_scheduleSerial;
+    }
+    m_wake.notify_one();
+}
+
+void BaaCompilerBridge::requestTokens(BaaTokenRequest request)
+{
+    if (not request.isValid()) return;
+    {
+        std::scoped_lock lock(m_mutex);
+        if (m_stopping) return;
+        m_latestVersions.try_emplace(request.uri, request.version);
+        m_pendingTokens.push_back(std::move(request));
         ++m_scheduleSerial;
     }
     m_wake.notify_one();
@@ -197,6 +299,22 @@ void BaaCompilerBridge::cancelSymbols(std::uint64_t token)
     m_wake.notify_one();
 }
 
+void BaaCompilerBridge::cancelTokens(std::uint64_t token)
+{
+    if (token == 0) return;
+    bool cancelActive = false;
+    {
+        std::scoped_lock lock(m_mutex);
+        std::erase_if(m_pendingTokens, [token](const BaaTokenRequest &request) {
+            return request.token == token;
+        });
+        cancelActive = m_activeTokenToken == token;
+        ++m_scheduleSerial;
+    }
+    if (cancelActive) m_runner.cancel();
+    m_wake.notify_one();
+}
+
 void BaaCompilerBridge::cancelFormat(std::uint64_t token)
 {
     if (token == 0) return;
@@ -238,6 +356,9 @@ void BaaCompilerBridge::cancel(const std::string &uri)
         std::erase_if(m_pendingSymbols, [&uri](const BaaSymbolRequest &request) {
             return request.uri == uri;
         });
+        std::erase_if(m_pendingTokens, [&uri](const BaaTokenRequest &request) {
+            return request.uri == uri;
+        });
         std::erase_if(m_pendingFormats, [&uri](const BaaFormatRequest &request) {
             return request.uri == uri;
         });
@@ -259,6 +380,7 @@ void BaaCompilerBridge::cancelAll()
         std::scoped_lock lock(m_mutex);
         m_pending.clear();
         m_pendingSymbols.clear();
+        m_pendingTokens.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
@@ -303,9 +425,11 @@ void BaaCompilerBridge::workerLoop()
     while (true) {
         BaaAnalysisRequest request;
         BaaSymbolRequest symbolRequest;
+        BaaTokenRequest tokenRequest;
         BaaFormatRequest formatRequest;
         BaaSemanticRequest semanticRequest;
         bool isSymbolRequest = false;
+        bool isTokenRequest = false;
         bool isFormatRequest = false;
         bool isSemanticRequest = false;
         bool isCompletionDataRequest = false;
@@ -315,12 +439,14 @@ void BaaCompilerBridge::workerLoop()
                 return m_stopping or m_completionDataPending or
                        not m_pendingFormats.empty() or
                        not m_pendingSemantic.empty() or
+                       not m_pendingTokens.empty() or
                        not m_pendingSymbols.empty() or not m_pending.empty();
             });
             if (m_stopping) return;
 
             if (not m_completionDataPending and m_pendingFormats.empty() and
                 m_pendingSemantic.empty() and
+                m_pendingTokens.empty() and
                 m_pendingSymbols.empty()) {
                 const std::uint64_t observedSerial = m_scheduleSerial;
                 const std::chrono::milliseconds debounce = m_debounce;
@@ -339,6 +465,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri.clear();
                 m_activeVersion = 0;
                 m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingFormats.empty()) {
@@ -348,6 +475,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = formatRequest.uri;
                 m_activeVersion = formatRequest.version;
                 m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
                 m_activeFormatToken = formatRequest.token;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSemantic.empty()) {
@@ -357,8 +485,19 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = semanticRequest.uri;
                 m_activeVersion = semanticRequest.version;
                 m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = semanticRequest.token;
+            } else if (not m_pendingTokens.empty()) {
+                isTokenRequest = true;
+                tokenRequest = std::move(m_pendingTokens.front());
+                m_pendingTokens.pop_front();
+                m_activeUri = tokenRequest.uri;
+                m_activeVersion = tokenRequest.version;
+                m_activeSymbolToken = 0;
+                m_activeTokenToken = tokenRequest.token;
+                m_activeFormatToken = 0;
+                m_activeSemanticToken = 0;
             } else if (not m_pendingSymbols.empty()) {
                 isSymbolRequest = true;
                 symbolRequest = std::move(m_pendingSymbols.front());
@@ -366,6 +505,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = symbolRequest.uri;
                 m_activeVersion = symbolRequest.version;
                 m_activeSymbolToken = symbolRequest.token;
+                m_activeTokenToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else {
@@ -376,6 +516,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeUri = request.uri;
                 m_activeVersion = request.version;
                 m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             }
@@ -423,16 +564,22 @@ void BaaCompilerBridge::workerLoop()
             ? formatRequest.filePath
             : isSemanticRequest
             ? semanticRequest.filePath
+            : isTokenRequest
+            ? tokenRequest.filePath
             : (isSymbolRequest ? symbolRequest.filePath : request.filePath);
         const std::string &text = isFormatRequest
             ? formatRequest.text
             : isSemanticRequest
             ? semanticRequest.text
+            : isTokenRequest
+            ? tokenRequest.text
             : (isSymbolRequest ? symbolRequest.text : request.text);
         const std::filesystem::path sourcePath = pathFromUtf8(filePath);
         std::vector<std::string> arguments;
         if (isFormatRequest) {
             arguments = {"--format=json", "--source-stdin=" + filePath};
+        } else if (isTokenRequest) {
+            arguments = {"--dump-tokens=json", "--source-stdin=" + filePath};
         } else if (isSemanticRequest) {
             arguments = {
                 "--semantic-query=json",
@@ -461,6 +608,68 @@ void BaaCompilerBridge::workerLoop()
                 : sourcePath.parent_path();
         ProcessResult process = m_runner.run(
             compiler, arguments, workingDirectory, text);
+
+        if (isTokenRequest) {
+            BaaTokenResult result;
+            result.token = tokenRequest.token;
+            result.uri = tokenRequest.uri;
+            result.text = tokenRequest.text;
+            result.version = tokenRequest.version;
+            result.exitCode = process.exitCode;
+
+            if (not process.started) {
+                result.errorMessage = process.errorMessage.empty()
+                    ? "Baa compiler executable was not found."
+                    : process.errorMessage;
+            } else if (not process.cancelled) {
+                const Json parsed = Json::parse(
+                    process.standardOutput, nullptr, false);
+                std::size_t sourceBytes = 0;
+                const Json rawTokens = parsed.is_object()
+                    ? parsed.value("tokens", Json(nullptr))
+                    : Json(nullptr);
+                if (process.exitCode == 0 and
+                    not parsed.is_discarded() and parsed.is_object() and
+                    stringFieldEquals(
+                        parsed, "schema_version", "tokens-json-v1") and
+                    parsed.value("compiler_version", Json(nullptr)).is_string() and
+                    stringFieldEquals(parsed, "language", "baa") and
+                    parsed.value("file", Json(nullptr)).is_string() and
+                    stringFieldEquals(
+                        parsed, "position_encoding", "utf-8-bytes") and
+                    nonnegativeSize(
+                        parsed.value("source_bytes", Json(nullptr)),
+                        &sourceBytes) and
+                    sourceBytes == text.size() and
+                    validBaaTokens(text, rawTokens)) {
+                    result.tokens = rawTokens;
+                } else {
+                    result.errorMessage =
+                        "Baa returned tokens that do not satisfy tokens-json-v1.";
+                    if (not process.standardError.empty()) {
+                        result.errorMessage += " " +
+                            trimmed(process.standardError);
+                    }
+                }
+            }
+
+            TokenCallback callback;
+            bool publish = false;
+            {
+                std::scoped_lock lock(m_mutex);
+                m_activeUri.clear();
+                m_activeVersion = 0;
+                m_activeTokenToken = 0;
+                const auto latest = m_latestVersions.find(tokenRequest.uri);
+                publish = not process.cancelled and
+                          latest != m_latestVersions.end() and
+                          latest->second == tokenRequest.version;
+                callback = m_tokenCallback;
+            }
+            if (publish and callback) callback(std::move(result));
+            m_wake.notify_one();
+            continue;
+        }
 
         if (isFormatRequest) {
             BaaFormatResult result;

@@ -26,6 +26,9 @@
 - [x] Add cached `workspace/symbol` indexing from Takween's source closure and
   Baa's `symbols-json-v1`, including unsaved-document overlays, cancellation,
   deterministic results, and visible partial-index failures.
+- [x] Add full semantic tokens from Baa's `tokens-json-v1`, including strict
+  contract validation, multiline splitting, UTF-8-to-UTF-16 conversion,
+  caching, cancellation, and stale-version rejection without a second lexer.
 
 ## 0.3 — Navigation and safe editing
 
@@ -49,6 +52,7 @@
   - [x] Load the initial project's exact source/include closure from
     `takween-build-plan-v1`.
   - [ ] Refresh changed manifests and support multiple dynamic workspace folders.
-- [ ] Semantic tokens, folding ranges, selection ranges, and inlay hints.
+- [x] Full semantic tokens for compiler-owned lexical categories.
+- [ ] Folding ranges, selection ranges, and inlay hints.
 - [ ] Crash recovery, restart limits, telemetry-free structured logs.
 - [ ] Windows/Linux packaging with Qalam and independent client smoke tests.

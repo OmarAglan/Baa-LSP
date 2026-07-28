@@ -48,6 +48,7 @@ private:
     void handleDidSave(const Json &params);
     void handleDidClose(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
+    void handleSemanticTokensFull(const Json &id, const Json &params);
     void handleWorkspaceSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
     void handleCompletionResolve(const Json &id, const Json &item);
@@ -62,6 +63,7 @@ private:
     void analyze(const BaaDocument &document);
     void onAnalysisFinished(BaaAnalysisResult result);
     void onSymbolsFinished(BaaSymbolResult result);
+    void onTokensFinished(BaaTokenResult result);
     void onCompletionDataFinished(BaaCompletionDataResult result);
     void onFormatFinished(BaaFormatResult result);
     void onSemanticFinished(BaaSemanticResult result);
@@ -79,6 +81,8 @@ private:
                          int line, int character);
     void invalidateSymbolRequests(const std::string &uri, int code,
                                   const std::string &message);
+    void invalidateTokenRequests(const std::string &uri, int code,
+                                 const std::string &message);
     void invalidateWorkspaceSymbolRequests(int code,
                                            const std::string &message);
     void invalidateCompletionRequests(const std::string &uri, int code,
@@ -121,6 +125,22 @@ private:
     std::unordered_map<std::uint64_t, PendingSymbolRequest> m_symbolRequests;
     std::unordered_map<std::string, CachedSymbols> m_symbolCache;
     std::uint64_t m_nextSymbolToken{1};
+    struct PendingTokenRequest
+    {
+        std::vector<Json> ids;
+        std::string uri;
+        int version{};
+    };
+    struct CachedTokens
+    {
+        int version{};
+        std::string text;
+        Json tokens = Json::array();
+    };
+    std::mutex m_tokenRequestsMutex;
+    std::unordered_map<std::uint64_t, PendingTokenRequest> m_tokenRequests;
+    std::unordered_map<std::string, CachedTokens> m_tokenCache;
+    std::uint64_t m_nextTokenToken{1};
     struct WorkspaceSymbolIndexEntry
     {
         int version{};

@@ -97,6 +97,73 @@ int main()
     CHECK(convertedSymbols[0]["children"][0]["kind"] == 13);
     CHECK(convertedSymbols[0]["children"][0]["range"]["start"]["character"] == 15);
 
+    const std::string tokenSource = "صحيح س = \"أ\nب\". // تعليق\n";
+    const std::size_t typeStart = tokenSource.find("صحيح");
+    const std::size_t typeEnd = typeStart + std::string("صحيح").size();
+    const std::size_t identifierStart = tokenSource.find("س");
+    const std::size_t identifierEnd =
+        identifierStart + std::string("س").size();
+    const std::size_t stringStart = tokenSource.find("\"");
+    const std::size_t stringEnd = tokenSource.find("\"", stringStart + 1) + 1;
+    const std::size_t commentStart = tokenSource.find("//");
+    const std::size_t commentEnd = tokenSource.find("\n", commentStart);
+    const Json rawTokens = Json::array({
+        {
+            {"kind", "type"},
+            {"span", {
+                {"start", {{"byte", typeStart}}},
+                {"end", {{"byte", typeEnd}}}
+            }}
+        },
+        {
+            {"kind", "identifier"},
+            {"span", {
+                {"start", {{"byte", identifierStart}}},
+                {"end", {{"byte", identifierEnd}}}
+            }}
+        },
+        {
+            {"kind", "string"},
+            {"span", {
+                {"start", {{"byte", stringStart}}},
+                {"end", {{"byte", stringEnd}}}
+            }}
+        },
+        {
+            {"kind", "comment"},
+            {"span", {
+                {"start", {{"byte", commentStart}}},
+                {"end", {{"byte", commentEnd}}}
+            }}
+        }
+    });
+    const Json semanticData =
+        PositionEncoding::baaTokensToLspData(tokenSource, rawTokens);
+    CHECK(semanticData.size() == 20);
+    int decodedLine = 0;
+    int decodedCharacter = 0;
+    int stringSegments = 0;
+    bool sawType = false;
+    bool sawComment = false;
+    for (std::size_t index = 0; index < semanticData.size(); index += 5) {
+        const int deltaLine = semanticData[index].get<int>();
+        const int deltaCharacter = semanticData[index + 1].get<int>();
+        decodedLine += deltaLine;
+        decodedCharacter = deltaLine == 0
+            ? decodedCharacter + deltaCharacter
+            : deltaCharacter;
+        const int type = semanticData[index + 3].get<int>();
+        sawType = sawType or type == 0;
+        sawComment = sawComment or type == 4;
+        if (type == 5) {
+            ++stringSegments;
+            CHECK(decodedLine == 0 or decodedLine == 1);
+        }
+    }
+    CHECK(sawType);
+    CHECK(sawComment);
+    CHECK(stringSegments == 2);
+
     const Json hover = {
         {"display", "صحيح اجمع(صحيح أول، صحيح ثان)"},
         {"description", "دالة باء"},

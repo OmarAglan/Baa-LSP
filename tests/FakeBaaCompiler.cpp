@@ -12,6 +12,7 @@ int main(int argc, char **argv)
     const std::string source((std::istreambuf_iterator<char>(std::cin)),
                              std::istreambuf_iterator<char>());
     bool dumpSymbols = false;
+    bool dumpTokens = false;
     bool completionData = false;
     bool formatJson = false;
     bool semanticQuery = false;
@@ -22,6 +23,8 @@ int main(int argc, char **argv)
         const std::string_view argument(argv[index]);
         if (argument == "--dump-symbols=json") {
             dumpSymbols = true;
+        } else if (argument == "--dump-tokens=json") {
+            dumpTokens = true;
         } else if (argument == "--completion-data=json") {
             completionData = true;
         } else if (argument == "--format=json") {
@@ -255,6 +258,39 @@ int main(int argc, char **argv)
 
     const std::string token = "مفقود";
     const std::size_t start = source.find(token);
+    if (dumpTokens) {
+        Json tokens = Json::array();
+        auto appendToken = [&](std::string_view spelling,
+                               std::string_view kind) {
+            const std::size_t start = source.find(spelling);
+            if (start == std::string::npos) return;
+            tokens.push_back({
+                {"kind", kind},
+                {"span", {
+                    {"start", {{"line", 1}, {"column", 1}, {"byte", start}}},
+                    {"end", {
+                        {"line", 1},
+                        {"column", 1 + spelling.size()},
+                        {"byte", start + spelling.size()}
+                    }}
+                }}
+            });
+        };
+        appendToken("صحيح", "type");
+        appendToken("١", "number");
+        appendToken("// تعليق", "comment");
+        std::cout << Json{
+            {"schema_version", "tokens-json-v1"},
+            {"compiler_version", "test"},
+            {"language", "baa"},
+            {"file", logicalFile},
+            {"position_encoding", "utf-8-bytes"},
+            {"source_bytes", source.size()},
+            {"tokens", std::move(tokens)}
+        }.dump();
+        return 0;
+    }
+
     Json diagnostics = Json::array();
     if (start != std::string::npos) {
         diagnostics.push_back({

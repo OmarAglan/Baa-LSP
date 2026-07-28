@@ -57,6 +57,16 @@ def main():
         assert response["id"] == 1
         assert response["result"]["capabilities"]["positionEncoding"] == "utf-16"
         assert response["result"]["capabilities"]["documentSymbolProvider"] is True
+        assert response["result"]["capabilities"]["semanticTokensProvider"] == {
+            "legend": {
+                "tokenTypes": [
+                    "type", "macro", "keyword", "modifier",
+                    "comment", "string", "number", "operator",
+                ],
+                "tokenModifiers": [],
+            },
+            "full": True,
+        }
         assert response["result"]["capabilities"]["workspaceSymbolProvider"] is True
         assert response["result"]["capabilities"]["hoverProvider"] is True
         assert response["result"]["capabilities"]["definitionProvider"] is True
@@ -85,7 +95,7 @@ def main():
             }},
         })
         diagnostics = read_message(process)
-        assert diagnostics["method"] == "textDocument/publishDiagnostics"
+        assert diagnostics["method"] == "textDocument/publishDiagnostics", diagnostics
         assert diagnostics["params"]["uri"] == uri
         assert diagnostics["params"]["version"] == 1
         assert len(diagnostics["params"]["diagnostics"]) == 1
@@ -93,6 +103,17 @@ def main():
         assert item["source"] == "باء"
         assert item["range"]["start"] == {"line": 1, "character": 4}
         assert item["data"]["fixes"][0]["title"] == "عرّف المتغير بإضافة نوعه"
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 21,
+            "method": "textDocument/semanticTokens/full",
+            "params": {"textDocument": {"uri": uri}},
+        })
+        semantic_tokens = read_response(process, 21)["result"]["data"]
+        assert semantic_tokens == [
+            0, 0, 4, 0, 0,
+            1, 12, 1, 6, 0,
+        ]
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 14, "method": "textDocument/codeAction",

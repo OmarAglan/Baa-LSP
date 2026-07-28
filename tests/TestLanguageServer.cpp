@@ -24,6 +24,12 @@ int main()
     CHECK(messages[0]["result"]["capabilities"]["positionEncoding"] == "utf-16");
     CHECK(messages[0]["result"]["capabilities"].contains("textDocumentSync"));
     CHECK(messages[0]["result"]["capabilities"]["documentSymbolProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]["full"] ==
+          true);
+    CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]
+              ["legend"]["tokenTypes"] ==
+          Json::array({"type", "macro", "keyword", "modifier", "comment",
+                       "string", "number", "operator"}));
     CHECK(messages[0]["result"]["capabilities"]["workspaceSymbolProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["hoverProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["definitionProvider"] == true);
