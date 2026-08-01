@@ -479,6 +479,130 @@ Json PositionEncoding::baaTokensToLspData(std::string_view text,
     return data;
 }
 
+Json PositionEncoding::baaFoldingRangesToLsp(std::string_view text,
+                                             const Json &ranges)
+{
+    Json converted = Json::array();
+    if (not ranges.is_array()) return converted;
+    for (const Json &item : ranges) {
+        if (not item.is_object()) continue;
+        const Json span = item.value("span", Json::object());
+        const Json start = span.value("start", Json::object());
+        const Json end = span.value("end", Json::object());
+        const std::int64_t startValue = integerValue(start, "byte", -1);
+        const std::int64_t endValue = integerValue(end, "byte", -1);
+        if (startValue < 0 or endValue <= startValue or
+            static_cast<std::size_t>(endValue) > text.size())
+            continue;
+        const Json startPosition = utf16PositionForByteOffset(
+            text, static_cast<std::size_t>(startValue));
+        const Json endPosition = utf16PositionForByteOffset(
+            text, static_cast<std::size_t>(endValue));
+        if (startPosition["line"] == endPosition["line"]) continue;
+        converted.push_back({
+            {"startLine", startPosition["line"]},
+            {"startCharacter", startPosition["character"]},
+            {"endLine", endPosition["line"]},
+            {"endCharacter", endPosition["character"]},
+            {"kind", item.value("kind", "region")}
+        });
+    }
+    return converted;
+}
+
+Json PositionEncoding::baaSelectionRangesToLsp(std::string_view text,
+                                               const Json &ranges,
+                                               const Json &positions)
+{
+    struct Candidate
+    {
+        std::size_t start{};
+        std::size_t end{};
+    };
+
+    std::vector<Candidate> candidates;
+    if (ranges.is_array()) {
+        candidates.reserve(ranges.size());
+        for (const Json &item : ranges) {
+            const Json span = item.is_object()
+                ? item.value("span", Json::object()) : Json::object();
+            const Json start = span.value("start", Json::object());
+            const Json end = span.value("end", Json::object());
+            const std::int64_t startValue = integerValue(start, "byte", -1);
+            const std::int64_t endValue = integerValue(end, "byte", -1);
+            if (startValue < 0 or endValue <= startValue or
+                static_cast<std::size_t>(endValue) > text.size())
+                continue;
+            candidates.push_back({
+                static_cast<std::size_t>(startValue),
+                static_cast<std::size_t>(endValue)
+            });
+        }
+    }
+    std::ranges::sort(candidates, [](const Candidate &left,
+                                    const Candidate &right) {
+        const std::size_t leftWidth = left.end - left.start;
+        const std::size_t rightWidth = right.end - right.start;
+        if (leftWidth != rightWidth) return leftWidth < rightWidth;
+        if (left.start != right.start) return left.start > right.start;
+        return left.end < right.end;
+    });
+    candidates.erase(
+        std::unique(candidates.begin(), candidates.end(),
+                    [](const Candidate &left, const Candidate &right) {
+                        return left.start == right.start and
+                               left.end == right.end;
+                    }),
+        candidates.end());
+
+    Json result = Json::array();
+    if (not positions.is_array()) return result;
+    for (const Json &position : positions) {
+        if (not position.is_object() or
+            not position.value("line", Json(nullptr)).is_number_integer() or
+            not position.value(
+                "character", Json(nullptr)).is_number_integer())
+            continue;
+        const int line = position.value("line", 0);
+        const int character = position.value("character", 0);
+        const std::size_t cursor = utf8ByteOffsetForUtf16Position(
+            text, std::max(0, line), std::max(0, character));
+
+        std::vector<Candidate> chain;
+        for (const Candidate &candidate : candidates) {
+            const bool containsCursor =
+                candidate.start <= cursor and
+                (cursor < candidate.end or
+                 (cursor == text.size() and candidate.end == cursor));
+            if (not containsCursor) continue;
+            if (chain.empty() or
+                (candidate.start <= chain.back().start and
+                 candidate.end >= chain.back().end and
+                 (candidate.start < chain.back().start or
+                  candidate.end > chain.back().end)))
+                chain.push_back(candidate);
+        }
+
+        Json parent = nullptr;
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+            Json node{{"range", {
+                {"start", utf16PositionForByteOffset(text, it->start)},
+                {"end", utf16PositionForByteOffset(text, it->end)}
+            }}};
+            if (not parent.is_null()) node["parent"] = std::move(parent);
+            parent = std::move(node);
+        }
+        if (parent.is_null()) {
+            const Json cursorPosition = utf16PositionForByteOffset(text, cursor);
+            parent = {{"range", {
+                {"start", cursorPosition}, {"end", cursorPosition}
+            }}};
+        }
+        result.push_back(std::move(parent));
+    }
+    return result;
+}
+
 Json PositionEncoding::baaSymbolsToLsp(std::string_view text, const Json &symbols)
 {
     Json converted = Json::array();

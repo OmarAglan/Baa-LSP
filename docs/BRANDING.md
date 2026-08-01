@@ -6,6 +6,9 @@
 
 ## الملفات
 
+- `assets/branding/baa-language-logo.png`: exact copy of the official Baa
+  language logo used by the repository front page; its canonical source is
+  `Baa/resources/Logo.png` in the Baa compiler repository.
 - `assets/branding/BaaLspLogo-final-v1.png`: الأصل الشفاف النهائي.
 - `assets/branding/icons/`: أحجام PNG من 16 إلى 512 بكسل.
 - `assets/branding/BaaLspLogo.ico`: ملف Windows متعدد الأحجام.
@@ -17,4 +20,3 @@
 التوليد الحفاظ على الحرف العربي واللونين الأزرق والأبيض وإضافة ثلاث عقد فقط،
 مع خلفية خضراء موحدة. أزالت أداة chroma التابعة لمهارة الصور الخلفية، ثم
 اشتُقت الأحجام النهائية آليًا من أصل شفاف واحد.
-

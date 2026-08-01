@@ -57,6 +57,8 @@ def main():
         assert response["id"] == 1
         assert response["result"]["capabilities"]["positionEncoding"] == "utf-16"
         assert response["result"]["capabilities"]["documentSymbolProvider"] is True
+        assert response["result"]["capabilities"]["foldingRangeProvider"] is True
+        assert response["result"]["capabilities"]["selectionRangeProvider"] is True
         assert response["result"]["capabilities"]["semanticTokensProvider"] == {
             "legend": {
                 "tokenTypes": [
@@ -116,6 +118,53 @@ def main():
             0, 0, 4, 0, 0,
             1, 12, 1, 6, 0,
         ]
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 22,
+            "method": "textDocument/foldingRange",
+            "params": {"textDocument": {"uri": uri}},
+        })
+        folding_ranges = read_response(process, 22)["result"]
+        assert folding_ranges == [{
+            "startLine": 0,
+            "startCharacter": 15,
+            "endLine": 2,
+            "endCharacter": 1,
+            "kind": "region",
+        }]
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 23,
+            "method": "textDocument/selectionRange",
+            "params": {
+                "textDocument": {"uri": uri},
+                "positions": [{"line": 1, "character": 4}],
+            },
+        })
+        selection = read_response(process, 23)["result"][0]
+        assert selection["range"]["start"] == {"line": 0, "character": 16}
+        assert selection["range"]["end"] == {"line": 2, "character": 0}
+        assert selection["parent"]["range"]["start"] == {
+            "line": 0, "character": 15,
+        }
+        outer = selection
+        while "parent" in outer:
+            outer = outer["parent"]
+        assert outer["range"] == {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 3, "character": 0},
+        }
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 24,
+            "method": "textDocument/selectionRange",
+            "params": {
+                "textDocument": {"uri": uri},
+                "positions": [{"line": 0, "character": 2147483648}],
+            },
+        })
+        oversized_position = read_response(process, 24)
+        assert oversized_position["error"]["code"] == -32602
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 14, "method": "textDocument/codeAction",

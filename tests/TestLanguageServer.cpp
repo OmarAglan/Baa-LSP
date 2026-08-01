@@ -24,6 +24,8 @@ int main()
     CHECK(messages[0]["result"]["capabilities"]["positionEncoding"] == "utf-16");
     CHECK(messages[0]["result"]["capabilities"].contains("textDocumentSync"));
     CHECK(messages[0]["result"]["capabilities"]["documentSymbolProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["foldingRangeProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["selectionRangeProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]["full"] ==
           true);
     CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]

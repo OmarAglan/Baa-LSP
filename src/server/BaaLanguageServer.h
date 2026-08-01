@@ -41,6 +41,12 @@ private:
         Rename
     };
 
+    enum class StructureReplyKind
+    {
+        Folding,
+        Selection
+    };
+
     void handleRequest(const Json &message);
     void handleNotification(const Json &message);
     void handleDidOpen(const Json &params);
@@ -49,6 +55,10 @@ private:
     void handleDidClose(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
     void handleSemanticTokensFull(const Json &id, const Json &params);
+    void handleFoldingRange(const Json &id, const Json &params);
+    void handleSelectionRange(const Json &id, const Json &params);
+    void handleStructureRequest(const Json &id, const Json &params,
+                                StructureReplyKind kind);
     void handleWorkspaceSymbol(const Json &id, const Json &params);
     void handleCompletion(const Json &id, const Json &params);
     void handleCompletionResolve(const Json &id, const Json &item);
@@ -64,6 +74,7 @@ private:
     void onAnalysisFinished(BaaAnalysisResult result);
     void onSymbolsFinished(BaaSymbolResult result);
     void onTokensFinished(BaaTokenResult result);
+    void onStructureFinished(BaaStructureResult result);
     void onCompletionDataFinished(BaaCompletionDataResult result);
     void onFormatFinished(BaaFormatResult result);
     void onSemanticFinished(BaaSemanticResult result);
@@ -83,6 +94,8 @@ private:
                                   const std::string &message);
     void invalidateTokenRequests(const std::string &uri, int code,
                                  const std::string &message);
+    void invalidateStructureRequests(const std::string &uri, int code,
+                                     const std::string &message);
     void invalidateWorkspaceSymbolRequests(int code,
                                            const std::string &message);
     void invalidateCompletionRequests(const std::string &uri, int code,
@@ -141,6 +154,31 @@ private:
     std::unordered_map<std::uint64_t, PendingTokenRequest> m_tokenRequests;
     std::unordered_map<std::string, CachedTokens> m_tokenCache;
     std::uint64_t m_nextTokenToken{1};
+    struct PendingStructureReply
+    {
+        Json id;
+        StructureReplyKind kind{StructureReplyKind::Folding};
+        Json positions = Json::array();
+    };
+    struct PendingStructureRequest
+    {
+        std::vector<PendingStructureReply> replies;
+        std::string uri;
+        int version{};
+    };
+    struct CachedStructure
+    {
+        int version{};
+        std::string text;
+        bool complete{};
+        Json foldingRanges = Json::array();
+        Json selectionRanges = Json::array();
+    };
+    std::mutex m_structureMutex;
+    std::unordered_map<std::uint64_t, PendingStructureRequest>
+        m_structureRequests;
+    std::unordered_map<std::string, CachedStructure> m_structureCache;
+    std::uint64_t m_nextStructureToken{1};
     struct WorkspaceSymbolIndexEntry
     {
         int version{};

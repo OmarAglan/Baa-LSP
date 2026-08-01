@@ -41,6 +41,9 @@ add_baa_lsp_test(test_language_server TestLanguageServer.cpp)
 add_executable(baa_lsp_fake_compiler FakeBaaCompiler.cpp)
 target_include_directories(baa_lsp_fake_compiler PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(baa_lsp_fake_compiler PRIVATE nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(baa_lsp_fake_compiler PRIVATE shell32)
+endif()
 baa_lsp_harden_windows_runtime(baa_lsp_fake_compiler)
 
 add_baa_lsp_runtime_test(

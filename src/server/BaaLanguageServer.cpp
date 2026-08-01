@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <optional>
 #include <unordered_set>
@@ -33,6 +34,24 @@ int intValue(const Json &object, std::string_view key)
 {
     const auto it = object.find(std::string(key));
     return it != object.end() and it->is_number_integer() ? it->get<int>() : 0;
+}
+
+bool nonnegativeIntValue(const Json &value, int *result)
+{
+    if (not result) return false;
+    if (value.is_number_unsigned()) {
+        const std::uint64_t integer = value.get<std::uint64_t>();
+        if (integer > static_cast<std::uint64_t>(
+                std::numeric_limits<int>::max()))
+            return false;
+        *result = static_cast<int>(integer);
+        return true;
+    }
+    if (not value.is_number_integer()) return false;
+    const std::int64_t integer = value.get<std::int64_t>();
+    if (integer < 0 or integer > std::numeric_limits<int>::max()) return false;
+    *result = static_cast<int>(integer);
+    return true;
 }
 
 Json objectValue(const Json &object, std::string_view key)
@@ -124,12 +143,12 @@ std::optional<std::size_t> lspByteOffset(std::string_view text,
     if (not position.is_object()) return std::nullopt;
     const auto lineIt = position.find("line");
     const auto characterIt = position.find("character");
+    int line{};
+    int character{};
     if (lineIt == position.end() or characterIt == position.end() or
-        not lineIt->is_number_integer() or
-        not characterIt->is_number_integer()) return std::nullopt;
-    const int line = lineIt->get<int>();
-    const int character = characterIt->get<int>();
-    if (line < 0 or character < 0) return std::nullopt;
+        not nonnegativeIntValue(*lineIt, &line) or
+        not nonnegativeIntValue(*characterIt, &character))
+        return std::nullopt;
     const std::size_t offset =
         PositionEncoding::utf8ByteOffsetForUtf16Position(text, line, character);
     const Json canonical{{"line", line}, {"character", character}};
@@ -546,6 +565,10 @@ BaaLanguageServer::BaaLanguageServer()
         [this](BaaSymbolResult result) { onSymbolsFinished(std::move(result)); });
     m_compiler.setTokenCallback(
         [this](BaaTokenResult result) { onTokensFinished(std::move(result)); });
+    m_compiler.setStructureCallback(
+        [this](BaaStructureResult result) {
+            onStructureFinished(std::move(result));
+        });
     m_compiler.setCompletionDataCallback(
         [this](BaaCompletionDataResult result) {
             onCompletionDataFinished(std::move(result));
@@ -561,6 +584,7 @@ BaaLanguageServer::~BaaLanguageServer()
     m_compiler.setAnalysisCallback({});
     m_compiler.setSymbolCallback({});
     m_compiler.setTokenCallback({});
+    m_compiler.setStructureCallback({});
     m_compiler.setCompletionDataCallback({});
     m_compiler.setFormatCallback({});
     m_compiler.setSemanticCallback({});
@@ -782,6 +806,8 @@ void BaaLanguageServer::handleRequest(const Json &message)
                     {"save", {{"includeText", false}}}
                 }},
                 {"documentSymbolProvider", true},
+                {"foldingRangeProvider", true},
+                {"selectionRangeProvider", true},
                 {"semanticTokensProvider", {
                     {"legend", {
                         {"tokenTypes", Json::array({
@@ -842,6 +868,9 @@ void BaaLanguageServer::handleRequest(const Json &message)
         invalidateSymbolRequests({}, RequestCancelled, "Request cancelled during shutdown.");
         invalidateTokenRequests({}, RequestCancelled,
                                 "Semantic tokens request cancelled during shutdown.");
+        invalidateStructureRequests(
+            {}, RequestCancelled,
+            "Structural editing request cancelled during shutdown.");
         invalidateWorkspaceSymbolRequests(
             RequestCancelled, "Workspace symbol request cancelled during shutdown.");
         invalidateCompletionRequests({}, RequestCancelled,
@@ -869,6 +898,14 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/semanticTokens/full") {
         handleSemanticTokensFull(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "textDocument/foldingRange") {
+        handleFoldingRange(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "textDocument/selectionRange") {
+        handleSelectionRange(id, objectValue(message, "params"));
         return;
     }
     if (method == "workspace/symbol") {
@@ -974,9 +1011,17 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
         document.uri,
         ContentModified,
         "Document opened before semantic tokens were ready.");
+    invalidateStructureRequests(
+        document.uri,
+        ContentModified,
+        "Document opened before structural editing data was ready.");
     {
         std::scoped_lock lock(m_tokenRequestsMutex);
         m_tokenCache.erase(document.uri);
+    }
+    {
+        std::scoped_lock lock(m_structureMutex);
+        m_structureCache.erase(document.uri);
     }
     invalidateWorkspaceSymbolRequests(
         ContentModified,
@@ -1016,6 +1061,9 @@ void BaaLanguageServer::handleDidChange(const Json &params)
                              "Document changed before symbols were ready.");
     invalidateTokenRequests(uri, ContentModified,
                             "Document changed before semantic tokens were ready.");
+    invalidateStructureRequests(
+        uri, ContentModified,
+        "Document changed before structural editing data was ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document change.");
@@ -1033,6 +1081,10 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     {
         std::scoped_lock lock(m_tokenRequestsMutex);
         m_tokenCache.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_structureMutex);
+        m_structureCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1062,6 +1114,9 @@ void BaaLanguageServer::handleDidClose(const Json &params)
                              "Document closed before symbols were ready.");
     invalidateTokenRequests(uri, ContentModified,
                             "Document closed before semantic tokens were ready.");
+    invalidateStructureRequests(
+        uri, ContentModified,
+        "Document closed before structural editing data was ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document closed.");
@@ -1084,6 +1139,10 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     {
         std::scoped_lock lock(m_tokenRequestsMutex);
         m_tokenCache.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_structureMutex);
+        m_structureCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1200,6 +1259,116 @@ void BaaLanguageServer::handleSemanticTokensFull(const Json &id,
         request.includePaths = m_projectPlan.includePaths;
     }
     m_compiler.requestTokens(std::move(request));
+}
+
+void BaaLanguageServer::handleFoldingRange(const Json &id,
+                                           const Json &params)
+{
+    handleStructureRequest(id, params, StructureReplyKind::Folding);
+}
+
+void BaaLanguageServer::handleSelectionRange(const Json &id,
+                                             const Json &params)
+{
+    handleStructureRequest(id, params, StructureReplyKind::Selection);
+}
+
+void BaaLanguageServer::handleStructureRequest(const Json &id,
+                                               const Json &params,
+                                               StructureReplyKind kind)
+{
+    const std::string uri =
+        stringValue(objectValue(params, "textDocument"), "uri");
+    if (uri.empty()) {
+        sendError(id, InvalidParams, "textDocument.uri is required.");
+        return;
+    }
+
+    Json positions = Json::array();
+    if (kind == StructureReplyKind::Selection) {
+        const auto requested = params.find("positions");
+        if (requested == params.end() or not requested->is_array() or
+            requested->empty()) {
+            sendError(id, InvalidParams,
+                      "selectionRange requires a non-empty positions array.");
+            return;
+        }
+        for (const Json &position : *requested) {
+            int line{};
+            int character{};
+            if (not position.is_object() or
+                not nonnegativeIntValue(
+                    position.value("line", Json(nullptr)), &line) or
+                not nonnegativeIntValue(
+                    position.value("character", Json(nullptr)), &character)) {
+                sendError(id, InvalidParams,
+                          "selectionRange positions must be non-negative integers.");
+                return;
+            }
+            positions.push_back({{"line", line}, {"character", character}});
+        }
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(uri)) {
+            sendError(id, InvalidParams, "Document is not open in Baa-LSP.");
+            return;
+        }
+        document = m_documents.document(uri);
+    }
+
+    CachedStructure cached;
+    bool hasCached = false;
+    {
+        std::scoped_lock lock(m_structureMutex);
+        const auto existing = m_structureCache.find(uri);
+        if (existing != m_structureCache.end() and
+            existing->second.version == document.version) {
+            cached = existing->second;
+            hasCached = true;
+        }
+    }
+    if (hasCached) {
+        if (kind == StructureReplyKind::Folding) {
+            sendResult(id, PositionEncoding::baaFoldingRangesToLsp(
+                cached.text, cached.foldingRanges));
+        } else {
+            sendResult(id, PositionEncoding::baaSelectionRangesToLsp(
+                cached.text, cached.selectionRanges, positions));
+        }
+        return;
+    }
+
+    const std::string path = localPathForUri(uri);
+    if (path.empty()) {
+        sendError(id, InvalidParams,
+                  "Baa-LSP supports local file:// documents only.");
+        return;
+    }
+
+    std::uint64_t token{};
+    {
+        std::scoped_lock lock(m_structureMutex);
+        for (auto &[existingToken, pending] : m_structureRequests) {
+            if (pending.uri == uri and pending.version == document.version) {
+                pending.replies.push_back({id, kind, std::move(positions)});
+                return;
+            }
+        }
+        token = m_nextStructureToken++;
+        if (token == 0) token = m_nextStructureToken++;
+        m_structureRequests.emplace(
+            token,
+            PendingStructureRequest{
+                {{id, kind, std::move(positions)}}, uri, document.version
+            });
+    }
+
+    m_compiler.requestStructure({
+        token, uri, path, document.text, document.version
+    });
 }
 
 void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
@@ -1918,6 +2087,28 @@ void BaaLanguageServer::handleCancelRequest(const Json &params)
     }
     if (tokenRequestToCancel != 0)
         m_compiler.cancelTokens(tokenRequestToCancel);
+    std::uint64_t structureTokenToCancel = 0;
+    if (not cancelled) {
+        std::scoped_lock lock(m_structureMutex);
+        for (auto request = m_structureRequests.begin();
+             request != m_structureRequests.end(); ++request) {
+            const auto reply = std::ranges::find_if(
+                request->second.replies,
+                [&idIt](const PendingStructureReply &candidate) {
+                    return candidate.id == *idIt;
+                });
+            if (reply == request->second.replies.end()) continue;
+            request->second.replies.erase(reply);
+            cancelled = true;
+            if (request->second.replies.empty()) {
+                structureTokenToCancel = request->first;
+                m_structureRequests.erase(request);
+            }
+            break;
+        }
+    }
+    if (structureTokenToCancel != 0)
+        m_compiler.cancelStructure(structureTokenToCancel);
     std::uint64_t formatTokenToCancel = 0;
     if (not cancelled) {
         std::scoped_lock lock(m_formatMutex);
@@ -2151,6 +2342,57 @@ void BaaLanguageServer::onTokensFinished(BaaTokenResult result)
             result.text, result.tokens)}
     };
     for (const Json &id : pending.ids) sendResult(id, converted);
+}
+
+void BaaLanguageServer::onStructureFinished(BaaStructureResult result)
+{
+    PendingStructureRequest pending;
+    {
+        std::scoped_lock lock(m_structureMutex);
+        const auto request = m_structureRequests.find(result.token);
+        if (request == m_structureRequests.end()) return;
+        pending = std::move(request->second);
+        m_structureRequests.erase(request);
+    }
+
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(pending.uri) or
+            m_documents.document(pending.uri).version != pending.version) {
+            for (const PendingStructureReply &reply : pending.replies) {
+                sendError(reply.id, ContentModified,
+                          "Document changed before structural editing data was ready.");
+            }
+            return;
+        }
+    }
+    if (not result.errorMessage.empty()) {
+        for (const PendingStructureReply &reply : pending.replies)
+            sendError(reply.id, InternalError, result.errorMessage);
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_structureMutex);
+        m_structureCache.insert_or_assign(
+            pending.uri,
+            CachedStructure{
+                pending.version,
+                result.text,
+                result.complete,
+                result.foldingRanges,
+                result.selectionRanges
+            });
+    }
+    for (const PendingStructureReply &reply : pending.replies) {
+        if (reply.kind == StructureReplyKind::Folding) {
+            sendResult(reply.id, PositionEncoding::baaFoldingRangesToLsp(
+                result.text, result.foldingRanges));
+        } else {
+            sendResult(reply.id, PositionEncoding::baaSelectionRangesToLsp(
+                result.text, result.selectionRanges, reply.positions));
+        }
+    }
 }
 
 Json BaaLanguageServer::workspaceSymbolResult(const std::string &query)
@@ -2653,6 +2895,37 @@ void BaaLanguageServer::invalidateTokenRequests(const std::string &uri,
     for (const CancelledRequest &request : cancelled) {
         m_compiler.cancelTokens(request.token);
         for (const Json &id : request.ids) sendError(id, code, message);
+    }
+}
+
+void BaaLanguageServer::invalidateStructureRequests(
+    const std::string &uri,
+    int code,
+    const std::string &message)
+{
+    struct CancelledRequest
+    {
+        std::uint64_t token{};
+        std::vector<PendingStructureReply> replies;
+    };
+    std::vector<CancelledRequest> cancelled;
+    {
+        std::scoped_lock lock(m_structureMutex);
+        for (auto request = m_structureRequests.begin();
+             request != m_structureRequests.end();) {
+            if (uri.empty() or request->second.uri == uri) {
+                cancelled.push_back(
+                    {request->first, std::move(request->second.replies)});
+                request = m_structureRequests.erase(request);
+            } else {
+                ++request;
+            }
+        }
+    }
+    for (const CancelledRequest &request : cancelled) {
+        m_compiler.cancelStructure(request.token);
+        for (const PendingStructureReply &reply : request.replies)
+            sendError(reply.id, code, message);
     }
 }
 

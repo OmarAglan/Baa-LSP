@@ -228,5 +228,61 @@ int main()
         includedLocation);
     CHECK(convertedIncluded["range"]["start"]["character"] == 5);
     CHECK(convertedIncluded["range"]["end"]["character"] == 9);
+
+    const std::string structureSource =
+        "صحيح الرئيسية() {\n"
+        "    صحيح س = ١.\n"
+        "}\n";
+    const std::size_t structureOpen = structureSource.find('{');
+    const std::size_t structureClose = structureSource.find('}');
+    const std::size_t selectedStart = structureSource.find(
+        "س", structureSource.find('\n') + 1);
+    const std::size_t selectedEnd = selectedStart + std::string("س").size();
+    auto structureRange = [](std::string_view kind,
+                             std::size_t startByte,
+                             std::size_t endByte) {
+        return Json{
+            {"kind", kind},
+            {"span", {
+                {"start", {{"byte", startByte}}},
+                {"end", {{"byte", endByte}}}
+            }}
+        };
+    };
+    const Json foldingRanges = Json::array({
+        structureRange("region", structureOpen, structureClose + 1)
+    });
+    const Json convertedFolds = PositionEncoding::baaFoldingRangesToLsp(
+        structureSource, foldingRanges);
+    CHECK(convertedFolds.size() == 1);
+    CHECK(convertedFolds[0]["startLine"] == 0);
+    CHECK(convertedFolds[0]["endLine"] == 2);
+    CHECK(convertedFolds[0]["kind"] == "region");
+
+    const Json selectionCandidates = Json::array({
+        structureRange("document", 0, structureSource.size()),
+        structureRange("group", structureOpen, structureClose + 1),
+        structureRange("content", structureOpen + 1, structureClose),
+        structureRange("line", structureSource.find("صحيح س"),
+                       structureSource.find('\n', selectedEnd)),
+        structureRange("token", selectedStart, selectedEnd)
+    });
+    const Json selectedPosition =
+        PositionEncoding::utf16PositionForByteOffset(
+            structureSource, selectedStart);
+    const Json convertedSelections =
+        PositionEncoding::baaSelectionRangesToLsp(
+            structureSource, selectionCandidates,
+            Json::array({selectedPosition}));
+    CHECK(convertedSelections.size() == 1);
+    CHECK(convertedSelections[0]["range"]["start"] == selectedPosition);
+    CHECK(convertedSelections[0].contains("parent"));
+    CHECK(convertedSelections[0]["parent"].contains("parent"));
+    Json outerSelection = convertedSelections[0];
+    while (outerSelection.contains("parent"))
+        outerSelection = outerSelection["parent"];
+    CHECK(outerSelection["range"]["start"]["line"] == 0);
+    CHECK(outerSelection["range"]["start"]["character"] == 0);
+    CHECK(outerSelection["range"]["end"]["line"] == 3);
     return 0;
 }

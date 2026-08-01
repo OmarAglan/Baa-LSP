@@ -121,6 +121,40 @@ bool isUtf8Boundary(std::string_view source, std::size_t byte)
             (static_cast<unsigned char>(source[byte]) & 0xC0u) != 0x80u);
 }
 
+bool structureLocationMatchesByte(std::string_view source,
+                                  std::size_t byte,
+                                  std::size_t claimedLine,
+                                  std::size_t claimedColumn)
+{
+    std::size_t line = 1;
+    std::size_t column = 1;
+    std::size_t offset = 0;
+    while (offset < byte) {
+        if (source[offset] == '\r') {
+            if (offset + 1 < byte and source[offset + 1] == '\n') ++offset;
+            ++line;
+            column = 1;
+            ++offset;
+            continue;
+        }
+        if (source[offset] == '\n') {
+            ++line;
+            column = 1;
+            ++offset;
+            continue;
+        }
+        const unsigned char first =
+            static_cast<unsigned char>(source[offset]);
+        const std::size_t width = first < 0x80u ? 1u
+            : (first & 0xE0u) == 0xC0u ? 2u
+            : (first & 0xF0u) == 0xE0u ? 3u : 4u;
+        if (offset + width > byte) return false;
+        offset += width;
+        column += width;
+    }
+    return line == claimedLine and column == claimedColumn;
+}
+
 bool appendSemanticIdentifierTokens(std::string_view source,
                                     std::string_view logicalFile,
                                     const Json &occurrences,
@@ -203,6 +237,76 @@ bool appendSemanticIdentifierTokens(std::string_view source,
     }
     return true;
 }
+
+bool validStructureKind(std::string_view kind, bool folding)
+{
+    if (folding) return kind == "region" or kind == "comment";
+    return kind == "token" or kind == "line" or kind == "content" or
+           kind == "group" or kind == "construct" or kind == "document";
+}
+
+bool validStructureRanges(std::string_view source,
+                          const Json &ranges,
+                          bool folding)
+{
+    if (not ranges.is_array()) return false;
+    bool hasPrevious = false;
+    std::size_t previousStart{};
+    std::size_t previousEnd{};
+    std::string previousKind;
+    for (const Json &range : ranges) {
+        if (not range.is_object() or
+            not range.value("kind", Json(nullptr)).is_string() or
+            not validStructureKind(
+                range["kind"].get_ref<const std::string &>(), folding))
+            return false;
+        const Json span = range.value("span", Json(nullptr));
+        const Json start = span.is_object()
+            ? span.value("start", Json(nullptr)) : Json(nullptr);
+        const Json end = span.is_object()
+            ? span.value("end", Json(nullptr)) : Json(nullptr);
+        if (not start.is_object() or not end.is_object())
+            return false;
+        std::size_t startByte{};
+        std::size_t endByte{};
+        std::size_t startLine{};
+        std::size_t startColumn{};
+        std::size_t endLine{};
+        std::size_t endColumn{};
+        if (not nonnegativeSize(start.value("byte", Json(nullptr)), &startByte) or
+            not nonnegativeSize(end.value("byte", Json(nullptr)), &endByte) or
+            not nonnegativeSize(start.value("line", Json(nullptr)), &startLine) or
+            not nonnegativeSize(
+                start.value("column", Json(nullptr)), &startColumn) or
+            not nonnegativeSize(end.value("line", Json(nullptr)), &endLine) or
+            not nonnegativeSize(end.value("column", Json(nullptr)), &endColumn) or
+            startLine == 0 or startColumn == 0 or endLine == 0 or
+            endColumn == 0 or
+            endByte <= startByte or endByte > source.size() or
+            not isUtf8Boundary(source, startByte) or
+            not isUtf8Boundary(source, endByte) or
+            not structureLocationMatchesByte(
+                source, startByte, startLine, startColumn) or
+            not structureLocationMatchesByte(
+                source, endByte, endLine, endColumn))
+            return false;
+        if (folding and startLine >= endLine)
+            return false;
+
+        const std::string kind = range["kind"].get<std::string>();
+        if (hasPrevious and
+            (startByte < previousStart or
+             (startByte == previousStart and endByte > previousEnd) or
+             (startByte == previousStart and endByte == previousEnd and
+              kind <= previousKind)))
+            return false;
+        hasPrevious = true;
+        previousStart = startByte;
+        previousEnd = endByte;
+        previousKind = kind;
+    }
+    return true;
+}
 }
 
 BaaCompilerBridge::BaaCompilerBridge()
@@ -218,6 +322,7 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_pending.clear();
         m_pendingSymbols.clear();
         m_pendingTokens.clear();
+        m_pendingStructure.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
@@ -225,6 +330,7 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_callback = {};
         m_symbolCallback = {};
         m_tokenCallback = {};
+        m_structureCallback = {};
         m_completionDataCallback = {};
         m_formatCallback = {};
         m_semanticCallback = {};
@@ -270,6 +376,12 @@ void BaaCompilerBridge::setTokenCallback(TokenCallback callback)
     m_tokenCallback = std::move(callback);
 }
 
+void BaaCompilerBridge::setStructureCallback(StructureCallback callback)
+{
+    std::scoped_lock lock(m_mutex);
+    m_structureCallback = std::move(callback);
+}
+
 void BaaCompilerBridge::setCompletionDataCallback(CompletionDataCallback callback)
 {
     std::scoped_lock lock(m_mutex);
@@ -304,6 +416,12 @@ void BaaCompilerBridge::schedule(BaaAnalysisRequest request)
             return tokenRequest.uri == request.uri and
                    tokenRequest.version != request.version;
         });
+        std::erase_if(
+            m_pendingStructure,
+            [&request](const BaaStructureRequest &structureRequest) {
+                return structureRequest.uri == request.uri and
+                       structureRequest.version != request.version;
+            });
         std::erase_if(m_pendingFormats, [&request](const BaaFormatRequest &formatRequest) {
             return formatRequest.uri == request.uri and
                    formatRequest.version != request.version;
@@ -341,6 +459,19 @@ void BaaCompilerBridge::requestTokens(BaaTokenRequest request)
         if (m_stopping) return;
         m_latestVersions.try_emplace(request.uri, request.version);
         m_pendingTokens.push_back(std::move(request));
+        ++m_scheduleSerial;
+    }
+    m_wake.notify_one();
+}
+
+void BaaCompilerBridge::requestStructure(BaaStructureRequest request)
+{
+    if (not request.isValid()) return;
+    {
+        std::scoped_lock lock(m_mutex);
+        if (m_stopping) return;
+        m_latestVersions.try_emplace(request.uri, request.version);
+        m_pendingStructure.push_back(std::move(request));
         ++m_scheduleSerial;
     }
     m_wake.notify_one();
@@ -415,6 +546,24 @@ void BaaCompilerBridge::cancelTokens(std::uint64_t token)
     m_wake.notify_one();
 }
 
+void BaaCompilerBridge::cancelStructure(std::uint64_t token)
+{
+    if (token == 0) return;
+    bool cancelActive = false;
+    {
+        std::scoped_lock lock(m_mutex);
+        std::erase_if(
+            m_pendingStructure,
+            [token](const BaaStructureRequest &request) {
+                return request.token == token;
+            });
+        cancelActive = m_activeStructureToken == token;
+        ++m_scheduleSerial;
+    }
+    if (cancelActive) m_runner.cancel();
+    m_wake.notify_one();
+}
+
 void BaaCompilerBridge::cancelFormat(std::uint64_t token)
 {
     if (token == 0) return;
@@ -459,6 +608,11 @@ void BaaCompilerBridge::cancel(const std::string &uri)
         std::erase_if(m_pendingTokens, [&uri](const BaaTokenRequest &request) {
             return request.uri == uri;
         });
+        std::erase_if(
+            m_pendingStructure,
+            [&uri](const BaaStructureRequest &request) {
+                return request.uri == uri;
+            });
         std::erase_if(m_pendingFormats, [&uri](const BaaFormatRequest &request) {
             return request.uri == uri;
         });
@@ -481,6 +635,7 @@ void BaaCompilerBridge::cancelAll()
         m_pending.clear();
         m_pendingSymbols.clear();
         m_pendingTokens.clear();
+        m_pendingStructure.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
@@ -526,10 +681,12 @@ void BaaCompilerBridge::workerLoop()
         BaaAnalysisRequest request;
         BaaSymbolRequest symbolRequest;
         BaaTokenRequest tokenRequest;
+        BaaStructureRequest structureRequest;
         BaaFormatRequest formatRequest;
         BaaSemanticRequest semanticRequest;
         bool isSymbolRequest = false;
         bool isTokenRequest = false;
+        bool isStructureRequest = false;
         bool isFormatRequest = false;
         bool isSemanticRequest = false;
         bool isCompletionDataRequest = false;
@@ -539,6 +696,7 @@ void BaaCompilerBridge::workerLoop()
                 return m_stopping or m_completionDataPending or
                        not m_pendingFormats.empty() or
                        not m_pendingSemantic.empty() or
+                       not m_pendingStructure.empty() or
                        not m_pendingTokens.empty() or
                        not m_pendingSymbols.empty() or not m_pending.empty();
             });
@@ -546,6 +704,7 @@ void BaaCompilerBridge::workerLoop()
 
             if (not m_completionDataPending and m_pendingFormats.empty() and
                 m_pendingSemantic.empty() and
+                m_pendingStructure.empty() and
                 m_pendingTokens.empty() and
                 m_pendingSymbols.empty()) {
                 const std::uint64_t observedSerial = m_scheduleSerial;
@@ -566,6 +725,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = 0;
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingFormats.empty()) {
@@ -576,6 +736,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = formatRequest.version;
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = formatRequest.token;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSemantic.empty()) {
@@ -586,8 +747,20 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = semanticRequest.version;
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = semanticRequest.token;
+            } else if (not m_pendingStructure.empty()) {
+                isStructureRequest = true;
+                structureRequest = std::move(m_pendingStructure.front());
+                m_pendingStructure.pop_front();
+                m_activeUri = structureRequest.uri;
+                m_activeVersion = structureRequest.version;
+                m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
+                m_activeStructureToken = structureRequest.token;
+                m_activeFormatToken = 0;
+                m_activeSemanticToken = 0;
             } else if (not m_pendingTokens.empty()) {
                 isTokenRequest = true;
                 tokenRequest = std::move(m_pendingTokens.front());
@@ -596,6 +769,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = tokenRequest.version;
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = tokenRequest.token;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSymbols.empty()) {
@@ -606,6 +780,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = symbolRequest.version;
                 m_activeSymbolToken = symbolRequest.token;
                 m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else {
@@ -617,6 +792,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeVersion = request.version;
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             }
@@ -664,6 +840,8 @@ void BaaCompilerBridge::workerLoop()
             ? formatRequest.filePath
             : isSemanticRequest
             ? semanticRequest.filePath
+            : isStructureRequest
+            ? structureRequest.filePath
             : isTokenRequest
             ? tokenRequest.filePath
             : (isSymbolRequest ? symbolRequest.filePath : request.filePath);
@@ -671,6 +849,8 @@ void BaaCompilerBridge::workerLoop()
             ? formatRequest.text
             : isSemanticRequest
             ? semanticRequest.text
+            : isStructureRequest
+            ? structureRequest.text
             : isTokenRequest
             ? tokenRequest.text
             : (isSymbolRequest ? symbolRequest.text : request.text);
@@ -678,6 +858,10 @@ void BaaCompilerBridge::workerLoop()
         std::vector<std::string> arguments;
         if (isFormatRequest) {
             arguments = {"--format=json", "--source-stdin=" + filePath};
+        } else if (isStructureRequest) {
+            arguments = {
+                "--dump-structure=json", "--source-stdin=" + filePath
+            };
         } else if (isTokenRequest) {
             arguments = {"--dump-tokens=json", "--source-stdin=" + filePath};
         } else if (isSemanticRequest) {
@@ -711,6 +895,77 @@ void BaaCompilerBridge::workerLoop()
                     : sourcePath.parent_path();
         ProcessResult process = m_runner.run(
             compiler, arguments, workingDirectory, text);
+
+        if (isStructureRequest) {
+            BaaStructureResult result;
+            result.token = structureRequest.token;
+            result.uri = structureRequest.uri;
+            result.text = structureRequest.text;
+            result.version = structureRequest.version;
+            result.exitCode = process.exitCode;
+
+            if (not process.started) {
+                result.errorMessage = process.errorMessage.empty()
+                    ? "Baa compiler executable was not found."
+                    : process.errorMessage;
+            } else if (not process.cancelled) {
+                const Json parsed = Json::parse(
+                    process.standardOutput, nullptr, false);
+                std::size_t sourceBytes = 0;
+                const Json foldingRanges = parsed.is_object()
+                    ? parsed.value("folding_ranges", Json(nullptr))
+                    : Json(nullptr);
+                const Json selectionRanges = parsed.is_object()
+                    ? parsed.value("selection_ranges", Json(nullptr))
+                    : Json(nullptr);
+                if (process.exitCode == 0 and
+                    not parsed.is_discarded() and parsed.is_object() and
+                    stringFieldEquals(
+                        parsed, "schema_version", "structure-json-v1") and
+                    parsed.value(
+                        "compiler_version", Json(nullptr)).is_string() and
+                    stringFieldEquals(parsed, "language", "baa") and
+                    stringFieldEquals(parsed, "file", filePath) and
+                    stringFieldEquals(
+                        parsed, "position_encoding", "utf-8-bytes") and
+                    nonnegativeSize(
+                        parsed.value("source_bytes", Json(nullptr)),
+                        &sourceBytes) and
+                    sourceBytes == text.size() and
+                    parsed.value("complete", Json(nullptr)).is_boolean() and
+                    validStructureRanges(text, foldingRanges, true) and
+                    validStructureRanges(text, selectionRanges, false)) {
+                    result.complete = parsed["complete"].get<bool>();
+                    result.foldingRanges = foldingRanges;
+                    result.selectionRanges = selectionRanges;
+                } else {
+                    result.errorMessage =
+                        "Baa returned structure data that does not satisfy "
+                        "structure-json-v1.";
+                    if (not process.standardError.empty()) {
+                        result.errorMessage += " " +
+                            trimmed(process.standardError);
+                    }
+                }
+            }
+
+            StructureCallback callback;
+            bool publish = false;
+            {
+                std::scoped_lock lock(m_mutex);
+                m_activeUri.clear();
+                m_activeVersion = 0;
+                m_activeStructureToken = 0;
+                const auto latest = m_latestVersions.find(structureRequest.uri);
+                publish = not process.cancelled and
+                          latest != m_latestVersions.end() and
+                          latest->second == structureRequest.version;
+                callback = m_structureCallback;
+            }
+            if (publish and callback) callback(std::move(result));
+            m_wake.notify_one();
+            continue;
+        }
 
         if (isTokenRequest) {
             BaaTokenResult result;

@@ -1,30 +1,83 @@
 #include "lsp/Json.h"
 
+#include <algorithm>
 #include <chrono>
 #include <iostream>
 #include <iterator>
 #include <string>
 #include <string_view>
 #include <thread>
+#include <vector>
+
+#if defined(_WIN32)
+#include <windows.h>
+#include <shellapi.h>
+#endif
+
+namespace {
+std::vector<std::string> commandLineArguments(int argc, char **argv)
+{
+#if defined(_WIN32)
+    (void)argc;
+    (void)argv;
+    int wideCount = 0;
+    wchar_t **wideArguments = CommandLineToArgvW(GetCommandLineW(), &wideCount);
+    if (not wideArguments) return {};
+    std::vector<std::string> arguments;
+    arguments.reserve(static_cast<std::size_t>(wideCount));
+    for (int index = 0; index < wideCount; ++index) {
+        const int bytes = WideCharToMultiByte(
+            CP_UTF8, WC_ERR_INVALID_CHARS, wideArguments[index], -1,
+            nullptr, 0, nullptr, nullptr);
+        if (bytes <= 0) {
+            LocalFree(wideArguments);
+            return {};
+        }
+        std::string encoded(static_cast<std::size_t>(bytes), '\0');
+        if (WideCharToMultiByte(
+                CP_UTF8, WC_ERR_INVALID_CHARS, wideArguments[index], -1,
+                encoded.data(), bytes, nullptr, nullptr) != bytes) {
+            LocalFree(wideArguments);
+            return {};
+        }
+        encoded.pop_back();
+        arguments.push_back(std::move(encoded));
+    }
+    LocalFree(wideArguments);
+    return arguments;
+#else
+    std::vector<std::string> arguments;
+    arguments.reserve(static_cast<std::size_t>(argc));
+    for (int index = 0; index < argc; ++index)
+        arguments.emplace_back(argv[index]);
+    return arguments;
+#endif
+}
+}
 
 int main(int argc, char **argv)
 {
+    const std::vector<std::string> arguments = commandLineArguments(argc, argv);
+    if (arguments.empty()) return 2;
     const std::string source((std::istreambuf_iterator<char>(std::cin)),
                              std::istreambuf_iterator<char>());
     bool dumpSymbols = false;
     bool dumpTokens = false;
+    bool dumpStructure = false;
     bool completionData = false;
     bool formatJson = false;
     bool semanticQuery = false;
     bool semanticIndex = false;
     std::string logicalFile = "رئيسي.baa";
     std::size_t positionByte = 0;
-    for (int index = 1; index < argc; ++index) {
-        const std::string_view argument(argv[index]);
+    for (std::size_t index = 1; index < arguments.size(); ++index) {
+        const std::string_view argument(arguments[index]);
         if (argument == "--dump-symbols=json") {
             dumpSymbols = true;
         } else if (argument == "--dump-tokens=json") {
             dumpTokens = true;
+        } else if (argument == "--dump-structure=json") {
+            dumpStructure = true;
         } else if (argument == "--completion-data=json") {
             completionData = true;
         } else if (argument == "--format=json") {
@@ -36,7 +89,89 @@ int main(int argc, char **argv)
         } else if (argument.starts_with("--position-byte=")) {
             positionByte = static_cast<std::size_t>(
                 std::stoull(std::string(argument.substr(16))));
+        } else if (argument.starts_with("--source-stdin=")) {
+            logicalFile = std::string(argument.substr(15));
         }
+    }
+    if (dumpStructure) {
+        auto location = [&source](std::size_t byte) {
+            int line = 1;
+            int column = 1;
+            for (std::size_t index = 0; index < byte and index < source.size();
+                 ++index) {
+                if (source[index] == '\n') {
+                    ++line;
+                    column = 1;
+                } else {
+                    ++column;
+                }
+            }
+            return Json{{"line", line}, {"column", column}, {"byte", byte}};
+        };
+        auto range = [&location](std::string_view kind,
+                                 std::size_t start,
+                                 std::size_t end) {
+            return Json{
+                {"kind", kind},
+                {"span", {
+                    {"start", location(start)},
+                    {"end", location(end)}
+                }}
+            };
+        };
+
+        Json foldingRanges = Json::array();
+        Json selectionRanges = Json::array();
+        bool complete = true;
+        const std::size_t opening = source.find('{');
+        const std::size_t closing = source.rfind('}');
+        if (opening != std::string::npos and closing > opening) {
+            if (location(opening)["line"] != location(closing + 1)["line"])
+                foldingRanges.push_back(range("region", opening, closing + 1));
+            if (closing > opening + 1)
+                selectionRanges.push_back(
+                    range("content", opening + 1, closing));
+            selectionRanges.push_back(range("group", opening, closing + 1));
+            selectionRanges.push_back(range("construct", 0, closing + 1));
+        } else if (opening != std::string::npos or closing != std::string::npos) {
+            complete = false;
+        }
+        if (not source.empty())
+            selectionRanges.push_back(range("document", 0, source.size()));
+        auto sortRanges = [](Json &ranges) {
+            std::vector<Json> sorted(ranges.begin(), ranges.end());
+            std::ranges::sort(sorted, [](const Json &left, const Json &right) {
+                const std::size_t leftStart =
+                    left["span"]["start"]["byte"].get<std::size_t>();
+                const std::size_t rightStart =
+                    right["span"]["start"]["byte"].get<std::size_t>();
+                if (leftStart != rightStart) return leftStart < rightStart;
+                const std::size_t leftEnd =
+                    left["span"]["end"]["byte"].get<std::size_t>();
+                const std::size_t rightEnd =
+                    right["span"]["end"]["byte"].get<std::size_t>();
+                if (leftEnd != rightEnd) return leftEnd > rightEnd;
+                return left["kind"].get<std::string>() <
+                       right["kind"].get<std::string>();
+            });
+            ranges = Json::array();
+            for (Json &item : sorted) ranges.push_back(std::move(item));
+        };
+        sortRanges(foldingRanges);
+        sortRanges(selectionRanges);
+
+        std::cout << Json{
+            {"schema_version", "structure-json-v1"},
+            {"compiler_version", "test"},
+            {"language", "baa"},
+            {"file", logicalFile},
+            {"position_encoding", "utf-8-bytes"},
+            {"source_bytes", source.size()},
+            {"complete", complete},
+            {"folding_ranges", std::move(foldingRanges)},
+            {"selection_ranges", std::move(selectionRanges)}
+        }.dump();
+        return 0;
     }
     if (formatJson) {
         const std::string formatted =

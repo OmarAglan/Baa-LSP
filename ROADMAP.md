@@ -56,6 +56,9 @@
     `takween-build-plan-v1`.
   - [ ] Refresh changed manifests and support multiple dynamic workspace folders.
 - [x] Full semantic tokens for compiler-owned lexical and identifier roles.
-- [ ] Folding ranges, selection ranges, and inlay hints.
+- [x] Folding and selection ranges through compiler-owned
+  `structure-json-v1`, with strict validation, shared per-version caching,
+  cancellation, stale-result rejection, and UTF-16 conversion.
+- [ ] Compiler-owned inlay hints.
 - [ ] Crash recovery, restart limits, telemetry-free structured logs.
 - [ ] Windows/Linux packaging with Qalam and independent client smoke tests.

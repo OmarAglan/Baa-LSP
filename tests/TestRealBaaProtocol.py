@@ -64,6 +64,8 @@ def main():
         })
         initialized = read_response(process, 1)
         assert initialized["result"]["capabilities"]["documentSymbolProvider"] is True
+        assert initialized["result"]["capabilities"]["foldingRangeProvider"] is True
+        assert initialized["result"]["capabilities"]["selectionRangeProvider"] is True
         semantic_provider = initialized["result"]["capabilities"]["semanticTokensProvider"]
         assert semantic_provider["full"] is True
         assert semantic_provider["legend"]["tokenTypes"] == [
@@ -117,6 +119,50 @@ def main():
         assert any(token[3] == 8 for token in decoded_tokens)
         assert any(token[3] == 9 for token in decoded_tokens)
         assert any(token[3] == 10 for token in decoded_tokens)
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 20,
+            "method": "textDocument/foldingRange",
+            "params": {"textDocument": {"uri": uri}},
+        })
+        folding_ranges = read_response(process, 20)["result"]
+        assert folding_ranges == [{
+            "startLine": 1,
+            "startCharacter": 16,
+            "endLine": 4,
+            "endCharacter": 1,
+            "kind": "region",
+        }]
+
+        local_declaration_line = source.splitlines()[2]
+        local_declaration_start = local_declaration_line.index("قيمة_محلية")
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 21,
+            "method": "textDocument/selectionRange",
+            "params": {
+                "textDocument": {"uri": uri},
+                "positions": [{
+                    "line": 2,
+                    "character": local_declaration_start + 1,
+                }],
+            },
+        })
+        selection = read_response(process, 21)["result"][0]
+        assert selection["range"] == {
+            "start": {"line": 2, "character": local_declaration_start},
+            "end": {
+                "line": 2,
+                "character": local_declaration_start + len("قيمة_محلية"),
+            },
+        }
+        assert "parent" in selection
+        outer = selection
+        while "parent" in outer:
+            outer = outer["parent"]
+        assert outer["range"] == {
+            "start": {"line": 0, "character": 0},
+            "end": {"line": 5, "character": 0},
+        }
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",

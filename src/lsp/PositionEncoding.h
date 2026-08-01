@@ -15,6 +15,10 @@ std::size_t byteOffsetForOneBasedLocation(std::string_view text, int line, int c
 Json baaDiagnosticsToLsp(std::string_view text, const Json &diagnostics);
 Json baaSymbolsToLsp(std::string_view text, const Json &symbols);
 Json baaTokensToLspData(std::string_view text, const Json &tokens);
+Json baaFoldingRangesToLsp(std::string_view text, const Json &ranges);
+Json baaSelectionRangesToLsp(std::string_view text,
+                             const Json &ranges,
+                             const Json &positions);
 Json baaSemanticHoverToLsp(std::string_view text, const Json &hover);
 Json baaSignatureHelpToLsp(const Json &signatureHelp);
 Json baaLocationToLsp(std::string_view text,
