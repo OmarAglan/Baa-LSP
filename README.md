@@ -37,10 +37,14 @@ Qalam or another LSP client
 - Conversion from Baa UTF-8 byte spans to LSP UTF-16 positions.
 - Version checks that reject stale document changes and analysis results.
 - Full `textDocument/semanticTokens/full` results sourced from Baa's
-  `tokens-json-v1` raw source contract. The server validates the exact source
-  byte length, converts UTF-8 byte spans to UTF-16, splits multiline tokens as
-  LSP requires, caches only the matching version, and makes cancellation or
-  unsupported output visible. It does not maintain a second lexer.
+  `tokens-json-v1` raw source contract and compiler-bound
+  `semantic-index-json-v1` occurrences. The server validates the exact source
+  byte length and identifier spans, converts UTF-8 byte spans to UTF-16, splits
+  multiline tokens as LSP requires, and colors functions, variables,
+  parameters, fields, enum members, and types without parsing identifier text.
+  A source-error exit from the semantic index retains the lexical layer for an
+  incomplete buffer; other contract failures remain visible. Only the matching
+  document version is cached, and the server does not maintain a second lexer.
 - Hierarchical `textDocument/documentSymbol` results sourced from Baa's
   `symbols-json-v1` contract, including types and exact Arabic name ranges.
 - Cached `workspace/symbol` results sourced from the same compiler contract.

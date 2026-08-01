@@ -62,6 +62,8 @@ def main():
                 "tokenTypes": [
                     "type", "macro", "keyword", "modifier",
                     "comment", "string", "number", "operator",
+                    "function", "variable", "parameter", "property",
+                    "enumMember",
                 ],
                 "tokenModifiers": [],
             },

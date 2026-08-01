@@ -68,6 +68,8 @@ struct BaaTokenRequest
     std::string filePath;
     std::string text;
     int version{};
+    std::filesystem::path projectWorkingDirectory;
+    std::vector<std::string> includePaths;
 
     bool isValid() const
     {

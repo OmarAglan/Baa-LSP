@@ -29,6 +29,9 @@
 - [x] Add full semantic tokens from Baa's `tokens-json-v1`, including strict
   contract validation, multiline splitting, UTF-8-to-UTF-16 conversion,
   caching, cancellation, and stale-version rejection without a second lexer.
+- [x] Enrich raw tokens with compiler-bound `semantic-index-json-v1`
+  occurrences for functions, variables, parameters, fields, enum members, and
+  type declarations, while retaining lexical results for incomplete buffers.
 
 ## 0.3 — Navigation and safe editing
 
@@ -52,7 +55,7 @@
   - [x] Load the initial project's exact source/include closure from
     `takween-build-plan-v1`.
   - [ ] Refresh changed manifests and support multiple dynamic workspace folders.
-- [x] Full semantic tokens for compiler-owned lexical categories.
+- [x] Full semantic tokens for compiler-owned lexical and identifier roles.
 - [ ] Folding ranges, selection ranges, and inlay hints.
 - [ ] Crash recovery, restart limits, telemetry-free structured logs.
 - [ ] Windows/Linux packaging with Qalam and independent client smoke tests.

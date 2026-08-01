@@ -792,7 +792,12 @@ void BaaLanguageServer::handleRequest(const Json &message)
                             "comment",
                             "string",
                             "number",
-                            "operator"
+                            "operator",
+                            "function",
+                            "variable",
+                            "parameter",
+                            "property",
+                            "enumMember"
                         })},
                         {"tokenModifiers", Json::array()}
                     }},
@@ -1184,13 +1189,17 @@ void BaaLanguageServer::handleSemanticTokensFull(const Json &id,
             PendingTokenRequest{{id}, uri, document.version});
     }
 
-    m_compiler.requestTokens({
-        token,
-        uri,
-        path,
-        document.text,
-        document.version
-    });
+    BaaTokenRequest request;
+    request.token = token;
+    request.uri = uri;
+    request.filePath = path;
+    request.text = document.text;
+    request.version = document.version;
+    if (m_projectPlan.loaded) {
+        request.projectWorkingDirectory = m_projectPlan.workingDirectory;
+        request.includePaths = m_projectPlan.includePaths;
+    }
+    m_compiler.requestTokens(std::move(request));
 }
 
 void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,

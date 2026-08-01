@@ -69,6 +69,8 @@ def main():
         assert semantic_provider["legend"]["tokenTypes"] == [
             "type", "macro", "keyword", "modifier",
             "comment", "string", "number", "operator",
+            "function", "variable", "parameter", "property",
+            "enumMember",
         ]
         assert initialized["result"]["capabilities"]["hoverProvider"] is True
         assert initialized["result"]["capabilities"]["definitionProvider"] is True
@@ -112,6 +114,9 @@ def main():
         assert (0, 0, 4, 0, 0) in decoded_tokens
         assert any(token[0] == 0 and token[3] == 7 for token in decoded_tokens)
         assert any(token[0] == 2 and token[3] == 6 for token in decoded_tokens)
+        assert any(token[3] == 8 for token in decoded_tokens)
+        assert any(token[3] == 9 for token in decoded_tokens)
+        assert any(token[3] == 10 for token in decoded_tokens)
 
         send_message(process, {
             "jsonrpc": "2.0", "id": 2, "method": "textDocument/documentSymbol",

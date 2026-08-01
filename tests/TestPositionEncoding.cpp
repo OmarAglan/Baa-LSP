@@ -123,6 +123,13 @@ int main()
             }}
         },
         {
+            {"kind", "variable"},
+            {"span", {
+                {"start", {{"byte", identifierStart}}},
+                {"end", {{"byte", identifierEnd}}}
+            }}
+        },
+        {
             {"kind", "string"},
             {"span", {
                 {"start", {{"byte", stringStart}}},
@@ -139,12 +146,13 @@ int main()
     });
     const Json semanticData =
         PositionEncoding::baaTokensToLspData(tokenSource, rawTokens);
-    CHECK(semanticData.size() == 20);
+    CHECK(semanticData.size() == 25);
     int decodedLine = 0;
     int decodedCharacter = 0;
     int stringSegments = 0;
     bool sawType = false;
     bool sawComment = false;
+    bool sawVariable = false;
     for (std::size_t index = 0; index < semanticData.size(); index += 5) {
         const int deltaLine = semanticData[index].get<int>();
         const int deltaCharacter = semanticData[index + 1].get<int>();
@@ -155,6 +163,7 @@ int main()
         const int type = semanticData[index + 3].get<int>();
         sawType = sawType or type == 0;
         sawComment = sawComment or type == 4;
+        sawVariable = sawVariable or type == 9;
         if (type == 5) {
             ++stringSegments;
             CHECK(decodedLine == 0 or decodedLine == 1);
@@ -162,6 +171,7 @@ int main()
     }
     CHECK(sawType);
     CHECK(sawComment);
+    CHECK(sawVariable);
     CHECK(stringSegments == 2);
 
     const Json hover = {

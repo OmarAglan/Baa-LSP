@@ -89,6 +89,13 @@ int semanticTokenType(const std::string &kind)
     if (kind == "string" or kind == "character") return 5;
     if (kind == "number") return 6;
     if (kind == "operator") return 7;
+    if (kind == "function") return 8;
+    if (kind == "variable" or kind == "constant" or kind == "array") return 9;
+    if (kind == "parameter") return 10;
+    if (kind == "field") return 11;
+    if (kind == "enum-member") return 12;
+    if (kind == "type-alias" or kind == "enum" or kind == "struct" or
+        kind == "union") return 0;
     return -1;
 }
 

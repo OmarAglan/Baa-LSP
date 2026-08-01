@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <map>
+#include <set>
 #include <vector>
 
 namespace {
@@ -100,6 +102,104 @@ bool validBaaTokens(std::string_view source, const Json &tokens)
                  0x80u))
             return false;
         previousEnd = endByte;
+    }
+    return true;
+}
+
+bool validSemanticIdentifierKind(std::string_view kind)
+{
+    return kind == "function" or kind == "variable" or kind == "constant" or
+           kind == "array" or kind == "parameter" or kind == "field" or
+           kind == "enum-member" or kind == "type-alias" or kind == "enum" or
+           kind == "struct" or kind == "union";
+}
+
+bool isUtf8Boundary(std::string_view source, std::size_t byte)
+{
+    return byte <= source.size() and
+           (byte == source.size() or
+            (static_cast<unsigned char>(source[byte]) & 0xC0u) != 0x80u);
+}
+
+bool appendSemanticIdentifierTokens(std::string_view source,
+                                    std::string_view logicalFile,
+                                    const Json &occurrences,
+                                    Json *tokens)
+{
+    if (not occurrences.is_array() or not tokens or not tokens->is_array())
+        return false;
+
+    const Json rawTokens = *tokens;
+    std::set<std::pair<std::size_t, std::size_t>> rawIdentifiers;
+    for (const Json &token : rawTokens) {
+        if (token.value("kind", "") != "identifier") continue;
+        const Json span = token.value("span", Json::object());
+        const Json start = span.value("start", Json::object());
+        const Json end = span.value("end", Json::object());
+        std::size_t startByte{};
+        std::size_t endByte{};
+        if (not nonnegativeSize(
+                start.value("byte", Json(nullptr)), &startByte) or
+            not nonnegativeSize(end.value("byte", Json(nullptr)), &endByte))
+            return false;
+        rawIdentifiers.emplace(startByte, endByte);
+    }
+    std::map<std::pair<std::size_t, std::size_t>, std::string> emitted;
+    for (const Json &occurrence : occurrences) {
+        if (not occurrence.is_object()) return false;
+        const Json symbol = occurrence.value("symbol", Json(nullptr));
+        const Json location = occurrence.value("location", Json(nullptr));
+        const Json role = occurrence.value("role", Json(nullptr));
+        if (not symbol.is_object() or not location.is_object() or
+            not role.is_string() or
+            (role != "definition" and role != "declaration" and
+             role != "reference") or
+            not symbol.value("domain", Json(nullptr)).is_string() or
+            not symbol.value("kind", Json(nullptr)).is_string() or
+            not symbol.value("name", Json(nullptr)).is_string() or
+            not location.value("file", Json(nullptr)).is_string() or
+            not location.value("kind", Json(nullptr)).is_string() or
+            not location.value("name", Json(nullptr)).is_string())
+            return false;
+
+        const std::string kind = symbol["kind"].get<std::string>();
+        if (not validSemanticIdentifierKind(kind) or
+            location["kind"] != symbol["kind"] or
+            location["name"] != symbol["name"])
+            return false;
+        if (location["file"].get_ref<const std::string &>() != logicalFile)
+            continue;
+
+        const Json range = location.value("range", Json(nullptr));
+        const Json start = range.is_object()
+            ? range.value("start", Json(nullptr)) : Json(nullptr);
+        const Json end = range.is_object()
+            ? range.value("end", Json(nullptr)) : Json(nullptr);
+        if (not start.is_object() or not end.is_object() or
+            not positiveInteger(start.value("line", Json(nullptr))) or
+            not positiveInteger(start.value("column", Json(nullptr))) or
+            not positiveInteger(end.value("line", Json(nullptr))) or
+            not positiveInteger(end.value("column", Json(nullptr))))
+            return false;
+
+        std::size_t startByte{};
+        std::size_t endByte{};
+        if (not nonnegativeSize(start.value("byte", Json(nullptr)), &startByte) or
+            not nonnegativeSize(end.value("byte", Json(nullptr)), &endByte) or
+            endByte <= startByte or endByte > source.size() or
+            not isUtf8Boundary(source, startByte) or
+            not isUtf8Boundary(source, endByte) or
+            not rawIdentifiers.contains(std::pair(startByte, endByte)))
+            return false;
+
+        const auto span = std::pair(startByte, endByte);
+        const auto previous = emitted.find(span);
+        if (previous != emitted.end()) {
+            if (previous->second != kind) return false;
+            continue;
+        }
+        emitted.emplace(span, kind);
+        tokens->push_back({{"kind", kind}, {"span", range}});
     }
     return true;
 }
@@ -605,7 +705,10 @@ void BaaCompilerBridge::workerLoop()
             isSemanticRequest and
             not semanticRequest.projectWorkingDirectory.empty()
                 ? semanticRequest.projectWorkingDirectory
-                : sourcePath.parent_path();
+                : isTokenRequest and
+                  not tokenRequest.projectWorkingDirectory.empty()
+                    ? tokenRequest.projectWorkingDirectory
+                    : sourcePath.parent_path();
         ProcessResult process = m_runner.run(
             compiler, arguments, workingDirectory, text);
 
@@ -643,6 +746,66 @@ void BaaCompilerBridge::workerLoop()
                     sourceBytes == text.size() and
                     validBaaTokens(text, rawTokens)) {
                     result.tokens = rawTokens;
+
+                    std::vector<std::string> indexArguments{
+                        "--semantic-index=json"
+                    };
+                    for (const std::string &includePath :
+                         tokenRequest.includePaths) {
+                        indexArguments.push_back("-I");
+                        indexArguments.push_back(includePath);
+                    }
+                    indexArguments.push_back(
+                        "--source-stdin=" + tokenRequest.filePath);
+                    ProcessResult indexProcess = m_runner.run(
+                        compiler, indexArguments, workingDirectory,
+                        tokenRequest.text);
+                    if (indexProcess.cancelled) {
+                        process.cancelled = true;
+                    } else if (not indexProcess.started) {
+                        result.errorMessage =
+                            indexProcess.errorMessage.empty()
+                                ? "Baa compiler executable was not found."
+                                : indexProcess.errorMessage;
+                    } else if (indexProcess.exitCode == 1) {
+                        // Incomplete source keeps the compiler-owned lexical
+                        // tokens and simply has no analyzed identifier roles.
+                    } else if (indexProcess.exitCode != 0) {
+                        result.errorMessage =
+                            "Baa semantic index failed with exit code " +
+                            std::to_string(indexProcess.exitCode) + ".";
+                        if (not indexProcess.standardError.empty()) {
+                            result.errorMessage += " " +
+                                trimmed(indexProcess.standardError);
+                        }
+                    } else {
+                        const Json index = Json::parse(
+                            indexProcess.standardOutput, nullptr, false);
+                        const Json occurrences = index.is_object()
+                            ? index.value("occurrences", Json(nullptr))
+                            : Json(nullptr);
+                        if (index.is_discarded() or not index.is_object() or
+                            not stringFieldEquals(
+                                index, "schema_version",
+                                "semantic-index-json-v1") or
+                            not index.value(
+                                "compiler_version", Json(nullptr)).is_string() or
+                            not index.value("file", Json(nullptr)).is_string() or
+                            not stringFieldEquals(
+                                index, "position_encoding", "utf-8-bytes") or
+                            not appendSemanticIdentifierTokens(
+                                tokenRequest.text,
+                                index["file"].get_ref<const std::string &>(),
+                                occurrences, &result.tokens)) {
+                            result.errorMessage =
+                                "Baa returned identifier roles that do not "
+                                "satisfy semantic-index-json-v1.";
+                            if (not indexProcess.standardError.empty()) {
+                                result.errorMessage += " " +
+                                    trimmed(indexProcess.standardError);
+                            }
+                        }
+                    }
                 } else {
                     result.errorMessage =
                         "Baa returned tokens that do not satisfy tokens-json-v1.";
