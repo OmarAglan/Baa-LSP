@@ -73,6 +73,12 @@ installed binary—not the build-tree executable—before publishing either
 archive. Baa and Takween remain separately discoverable ecosystem tools; the
 server package does not duplicate their files.
 
+Hosted packaging is verified by
+[CI run 31506691139](https://github.com/OmarAglan/Baa-LSP/actions/runs/31506691139),
+which publishes `Baa-LSP-Windows-x86_64` and `Baa-LSP-Linux-x86_64` after the
+installed-binary smoke passes. Qalam's matching combined artifacts are verified
+by [run 31506739091](https://github.com/OmarAglan/Qalam-IDE/actions/runs/31506739091).
+
 ## Run
 
 ```text

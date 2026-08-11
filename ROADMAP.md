@@ -68,5 +68,13 @@
 - [ ] Telemetry-free structured server logs.
 - [x] Standalone Windows/Linux install trees and versioned archives with the
   independent Python protocol client running against the installed server.
-- [ ] Publish a hosted Windows/Linux receipt for the implemented Qalam bundle;
-  the local Windows ZIP already passes an isolated Qalam + Baa-LSP smoke.
+- [x] Bundle the admitted server with Qalam on Windows/Linux and publish hosted
+  combined artifacts; the Windows ZIP also passes an isolated Qalam + Baa-LSP
+  runtime smoke.
+
+**Packaging receipt (2026-08-11):** standalone install-tree protocol smoke and
+versioned archives passed on both hosts in
+[Baa-LSP CI 31506691139](https://github.com/OmarAglan/Baa-LSP/actions/runs/31506691139).
+The pinned server was then bundled at Qalam's automatic discovery path and both
+combined artifacts passed in
+[Qalam CI 31506739091](https://github.com/OmarAglan/Qalam-IDE/actions/runs/31506739091).
