@@ -137,6 +137,20 @@ std::string comparablePath(std::filesystem::path path)
     return value;
 }
 
+bool pathIsWithin(const std::filesystem::path &path,
+                  const std::filesystem::path &root)
+{
+    const std::string candidate = comparablePath(path);
+    const std::string parent = comparablePath(root);
+    if (candidate.empty() or parent.empty() or
+        not candidate.starts_with(parent))
+        return false;
+    if (candidate.size() == parent.size()) return true;
+    if (parent.back() == '/' or parent.back() == '\\') return true;
+    const char boundary = candidate[parent.size()];
+    return boundary == '/' or boundary == '\\';
+}
+
 std::optional<std::size_t> lspByteOffset(std::string_view text,
                                          const Json &position)
 {
@@ -624,32 +638,93 @@ void BaaLanguageServer::setExitCallback(ExitCallback callback)
     m_exitCallback = std::move(callback);
 }
 
-void BaaLanguageServer::loadProjectPlan(const Json &initializeParams)
+void BaaLanguageServer::initializeWorkspace(const Json &initializeParams)
 {
-    m_projectPlan = {};
-    {
-        std::scoped_lock lock(m_symbolRequestsMutex);
-        m_workspaceSymbolIndex.clear();
-        m_pendingWorkspaceSymbolRequests.clear();
-    }
-    std::string rootUri = stringValue(initializeParams, "rootUri");
-    if (rootUri.empty()) {
-        const auto folders = initializeParams.find("workspaceFolders");
-        if (folders != initializeParams.end() and folders->is_array() and
-            not folders->empty() and folders->front().is_object()) {
-            rootUri = stringValue(folders->front(), "uri");
+    m_initializationOptions = objectValue(
+        initializeParams, "initializationOptions");
+    m_workspaceRoots.clear();
+    m_projectPlans.clear();
+    invalidateProjectContext(
+        "Project context changed while the language server initialized.");
+
+    bool addedFolder = false;
+    const auto folders = initializeParams.find("workspaceFolders");
+    if (folders != initializeParams.end() and folders->is_array()) {
+        for (const Json &folder : *folders) {
+            if (not folder.is_object()) continue;
+            const std::string pathText = localPathForUri(
+                stringValue(folder, "uri"));
+            if (pathText.empty()) continue;
+            addedFolder = addWorkspaceRoot(pathFromUtf8(pathText)) or
+                addedFolder;
         }
     }
-    const std::string rootPathText = localPathForUri(rootUri);
-    if (rootPathText.empty()) return;
+    if (addedFolder) return;
 
-    const std::filesystem::path root = pathFromUtf8(rootPathText);
+    const std::string rootPathText = localPathForUri(
+        stringValue(initializeParams, "rootUri"));
+    if (not rootPathText.empty())
+        addWorkspaceRoot(pathFromUtf8(rootPathText));
+}
+
+bool BaaLanguageServer::addWorkspaceRoot(const std::filesystem::path &root)
+{
+    std::filesystem::path normalized;
+    try {
+        normalized = std::filesystem::absolute(root).lexically_normal();
+    } catch (const std::filesystem::filesystem_error &error) {
+        sendLogMessage(
+            "Workspace folder could not be normalized: " +
+                std::string(error.what()),
+            2);
+        return false;
+    }
+    const std::string key = comparablePath(normalized);
+    if (key.empty() or m_workspaceRoots.contains(key)) return false;
+    m_workspaceRoots.emplace(key, normalized);
+    if (not loadProjectPlan(normalized, false)) {
+        invalidateProjectContext(
+            "Workspace folders changed before project data was ready.");
+    }
+    return true;
+}
+
+bool BaaLanguageServer::removeWorkspaceRoot(
+    const std::filesystem::path &root)
+{
+    const std::string key = comparablePath(root);
+    if (key.empty() or m_workspaceRoots.erase(key) == 0) return false;
+    m_projectPlans.erase(key);
+    invalidateProjectContext(
+        "Workspace folders changed before project data was ready.");
+    sendLogMessage("Removed workspace folder " + utf8FromPath(root) + ".", 3);
+    return true;
+}
+
+bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
+                                        bool reportMissingManifest)
+{
+    const std::string key = comparablePath(root);
+    if (key.empty()) return false;
     const std::filesystem::path manifest =
         root / pathFromUtf8("مشروع.تكوين");
     std::error_code filesystemError;
-    if (not std::filesystem::is_regular_file(manifest, filesystemError)) return;
+    if (not std::filesystem::is_regular_file(manifest, filesystemError)) {
+        const bool removed = m_projectPlans.erase(key) != 0;
+        if (reportMissingManifest) {
+            sendLogMessage(
+                "Takween project context was removed because مشروع.تكوين "
+                "is not present in " + utf8FromPath(root) + ".",
+                2);
+        }
+        if (removed) {
+            invalidateProjectContext(
+                "Takween project context changed before semantic data was ready.");
+        }
+        return false;
+    }
 
-    const Json options = objectValue(initializeParams, "initializationOptions");
+    const Json &options = m_initializationOptions;
     std::string program = stringValue(options, "takweenPath");
     if (program.empty()) program = m_takweenProgram;
     if (program.empty()) {
@@ -703,22 +778,32 @@ void BaaLanguageServer::loadProjectPlan(const Json &initializeParams)
         process = m_projectRunner.run(program, arguments, root, {});
     }
     if (not process.started) {
+        const bool removed = m_projectPlans.erase(key) != 0;
         sendLogMessage(
             "Takween project plan is unavailable: " +
             (process.errorMessage.empty()
                 ? std::string("the executable was not found.")
                 : process.errorMessage),
             2);
-        return;
+        if (removed) {
+            invalidateProjectContext(
+                "Takween project context failed to reload.");
+        }
+        return false;
     }
     if (process.exitCode != 0) {
+        const bool removed = m_projectPlans.erase(key) != 0;
         std::string message =
             "Takween project plan failed with exit code " +
             std::to_string(process.exitCode) + ".";
         if (not process.standardError.empty())
             message += " " + process.standardError;
         sendLogMessage(message, 2);
-        return;
+        if (removed) {
+            invalidateProjectContext(
+                "Takween project context failed to reload.");
+        }
+        return false;
     }
 
     const Json plan = Json::parse(process.standardOutput, nullptr, false);
@@ -726,10 +811,15 @@ void BaaLanguageServer::loadProjectPlan(const Json &initializeParams)
         plan.value("schema_version", "") != "takween-build-plan-v1" or
         not plan.value("source_files", Json::array()).is_array() or
         not plan.value("include_paths", Json::array()).is_array()) {
+        const bool removed = m_projectPlans.erase(key) != 0;
         sendLogMessage(
             "Takween returned a project plan that does not satisfy "
             "takween-build-plan-v1.", 2);
-        return;
+        if (removed) {
+            invalidateProjectContext(
+                "Takween project context failed to reload.");
+        }
+        return false;
     }
 
     std::filesystem::path workingDirectory = pathFromUtf8(
@@ -760,13 +850,74 @@ void BaaLanguageServer::loadProjectPlan(const Json &initializeParams)
             utf8FromPath(std::filesystem::absolute(path).lexically_normal()));
     }
     loaded.loaded = not loaded.sourceFiles.empty();
-    m_projectPlan = std::move(loaded);
-    if (m_projectPlan.loaded) {
+    if (not loaded.loaded) {
+        const bool removed = m_projectPlans.erase(key) != 0;
+        sendLogMessage(
+            "Takween returned a project plan without Baa translation units for " +
+                utf8FromPath(root) + ".",
+            2);
+        if (removed) {
+            invalidateProjectContext(
+                "Takween project context failed to reload.");
+        }
+        return false;
+    }
+    const std::size_t sourceCount = loaded.sourceFiles.size();
+    m_projectPlans.insert_or_assign(key, std::move(loaded));
+    invalidateProjectContext(
+        "Takween project context changed before semantic data was ready.");
+    if (m_projectPlans.at(key).loaded) {
         sendLogMessage(
             "Loaded Takween project plan with " +
-            std::to_string(m_projectPlan.sourceFiles.size()) +
-            " Baa translation units.", 3);
+            std::to_string(sourceCount) +
+            " Baa translation units from " + utf8FromPath(root) + ".", 3);
     }
+    return true;
+}
+
+void BaaLanguageServer::invalidateProjectContext(const std::string &message)
+{
+    invalidateWorkspaceSymbolRequests(ContentModified, message);
+    invalidateSymbolRequests({}, ContentModified, message);
+    invalidateTokenRequests({}, ContentModified, message);
+    invalidateSemanticRequests({}, ContentModified, message);
+    {
+        std::scoped_lock lock(m_symbolRequestsMutex);
+        m_symbolCache.clear();
+        m_workspaceSymbolIndex.clear();
+    }
+    {
+        std::scoped_lock lock(m_tokenRequestsMutex);
+        m_tokenCache.clear();
+    }
+    {
+        std::scoped_lock lock(m_semanticMutex);
+        m_semanticCache.clear();
+    }
+}
+
+const BaaLanguageServer::ProjectPlan *BaaLanguageServer::projectPlanForPath(
+    const std::filesystem::path &path) const
+{
+    const ProjectPlan *selected = nullptr;
+    std::size_t selectedRootLength = 0;
+    for (const auto &[key, plan] : m_projectPlans) {
+        (void)key;
+        if (not plan.loaded or not pathIsWithin(path, plan.root)) continue;
+        const std::size_t rootLength = comparablePath(plan.root).size();
+        if (not selected or rootLength > selectedRootLength) {
+            selected = &plan;
+            selectedRootLength = rootLength;
+        }
+    }
+    return selected;
+}
+
+bool BaaLanguageServer::hasLoadedProjectPlan() const
+{
+    return std::ranges::any_of(
+        m_projectPlans,
+        [](const auto &entry) { return entry.second.loaded; });
 }
 
 void BaaLanguageServer::receiveMessage(std::string_view jsonBody)
@@ -830,6 +981,12 @@ void BaaLanguageServer::handleRequest(const Json &message)
                     {"full", true}
                 }},
                 {"workspaceSymbolProvider", true},
+                {"workspace", {
+                    {"workspaceFolders", {
+                        {"supported", true},
+                        {"changeNotifications", true}
+                    }}
+                }},
                 {"hoverProvider", true},
                 {"definitionProvider", true},
                 {"referencesProvider", true},
@@ -856,7 +1013,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
             m_completionDataError.clear();
         }
         m_compiler.requestCompletionData();
-        loadProjectPlan(initializeParams);
+        initializeWorkspace(initializeParams);
         return;
     }
     if (not m_initializeResponded) {
@@ -984,10 +1141,61 @@ void BaaLanguageServer::handleNotification(const Json &message)
     }
     if (not m_initialized or m_shutdownRequested) return;
 
-    if (method == "textDocument/didOpen") handleDidOpen(params);
+    if (method == "workspace/didChangeWorkspaceFolders")
+        handleDidChangeWorkspaceFolders(params);
+    else if (method == "workspace/didChangeWatchedFiles")
+        handleDidChangeWatchedFiles(params);
+    else if (method == "textDocument/didOpen") handleDidOpen(params);
     else if (method == "textDocument/didChange") handleDidChange(params);
     else if (method == "textDocument/didSave") handleDidSave(params);
     else if (method == "textDocument/didClose") handleDidClose(params);
+}
+
+void BaaLanguageServer::handleDidChangeWorkspaceFolders(const Json &params)
+{
+    const Json event = objectValue(params, "event");
+    const auto removed = event.find("removed");
+    if (removed != event.end() and removed->is_array()) {
+        for (const Json &folder : *removed) {
+            if (not folder.is_object()) continue;
+            const std::string path = localPathForUri(stringValue(folder, "uri"));
+            if (not path.empty()) removeWorkspaceRoot(pathFromUtf8(path));
+        }
+    }
+    const auto added = event.find("added");
+    if (added != event.end() and added->is_array()) {
+        for (const Json &folder : *added) {
+            if (not folder.is_object()) continue;
+            const std::string path = localPathForUri(stringValue(folder, "uri"));
+            if (not path.empty()) addWorkspaceRoot(pathFromUtf8(path));
+        }
+    }
+}
+
+void BaaLanguageServer::handleDidChangeWatchedFiles(const Json &params)
+{
+    const auto changes = params.find("changes");
+    if (changes == params.end() or not changes->is_array()) return;
+
+    std::unordered_set<std::string> rootsToReload;
+    for (const Json &change : *changes) {
+        if (not change.is_object()) continue;
+        const std::string pathText = localPathForUri(stringValue(change, "uri"));
+        if (pathText.empty()) continue;
+        const std::filesystem::path changed = pathFromUtf8(pathText);
+        const std::filesystem::path name = changed.filename();
+        if (name != pathFromUtf8("مشروع.تكوين") and
+            name != pathFromUtf8("تكوين.قفل"))
+            continue;
+        const std::string rootKey = comparablePath(changed.parent_path());
+        if (m_workspaceRoots.contains(rootKey)) rootsToReload.insert(rootKey);
+    }
+
+    for (const std::string &rootKey : rootsToReload) {
+        const auto root = m_workspaceRoots.find(rootKey);
+        if (root != m_workspaceRoots.end())
+            loadProjectPlan(root->second, true);
+    }
 }
 
 void BaaLanguageServer::handleDidOpen(const Json &params)
@@ -1088,7 +1296,7 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     }
     {
         std::scoped_lock lock(m_semanticMutex);
-        if (m_projectPlan.loaded) m_semanticCache.clear();
+        if (hasLoadedProjectPlan()) m_semanticCache.clear();
         else m_semanticCache.erase(uri);
     }
     analyze(document);
@@ -1146,7 +1354,7 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     }
     {
         std::scoped_lock lock(m_semanticMutex);
-        if (m_projectPlan.loaded) m_semanticCache.clear();
+        if (hasLoadedProjectPlan()) m_semanticCache.clear();
         else m_semanticCache.erase(uri);
     }
     publishDiagnostics(uri, 0, Json::array());
@@ -1254,9 +1462,9 @@ void BaaLanguageServer::handleSemanticTokensFull(const Json &id,
     request.filePath = path;
     request.text = document.text;
     request.version = document.version;
-    if (m_projectPlan.loaded) {
-        request.projectWorkingDirectory = m_projectPlan.workingDirectory;
-        request.includePaths = m_projectPlan.includePaths;
+    if (const ProjectPlan *plan = projectPlanForPath(pathFromUtf8(path))) {
+        request.projectWorkingDirectory = plan->workingDirectory;
+        request.includePaths = plan->includePaths;
     }
     m_compiler.requestTokens(std::move(request));
 }
@@ -1427,8 +1635,10 @@ void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
         return true;
     };
 
-    if (m_projectPlan.loaded) {
-        for (const std::filesystem::path &source : m_projectPlan.sourceFiles) {
+    for (const auto &[root, plan] : m_projectPlans) {
+        (void)root;
+        if (not plan.loaded) continue;
+        for (const std::filesystem::path &source : plan.sourceFiles) {
             if (not appendSource(source)) {
                 sendError(
                     id,
@@ -1437,22 +1647,21 @@ void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
                 return;
             }
         }
-    } else {
-        for (const BaaDocument &document : openDocuments) {
-            const std::string pathText = localPathForUri(document.uri);
-            if (pathText.empty()) continue;
-            const std::filesystem::path path = pathFromUtf8(pathText);
-            if (path.extension() != ".baa" and path.extension() != ".baahd")
-                continue;
-            if (seenUris.insert(document.uri).second) {
-                sources.push_back({
-                    document.uri,
-                    pathText,
-                    document.text,
-                    document.version,
-                    true
-                });
-            }
+    }
+    for (const BaaDocument &document : openDocuments) {
+        const std::string pathText = localPathForUri(document.uri);
+        if (pathText.empty()) continue;
+        const std::filesystem::path path = pathFromUtf8(pathText);
+        if (path.extension() != ".baa" and path.extension() != ".baahd")
+            continue;
+        if (seenUris.insert(document.uri).second) {
+            sources.push_back({
+                document.uri,
+                pathText,
+                document.text,
+                document.version,
+                true
+            });
         }
     }
 
@@ -1550,10 +1759,11 @@ void BaaLanguageServer::requestSymbols(std::string uri,
     BaaSymbolRequest request;
     request.token = token;
     request.uri = std::move(uri);
+    const ProjectPlan *plan = projectPlanForPath(pathFromUtf8(filePath));
     request.filePath = std::move(filePath);
     request.text = std::move(text);
     request.version = version;
-    request.includePaths = m_projectPlan.includePaths;
+    if (plan) request.includePaths = plan->includePaths;
     request.requireLatestVersion = requireOpenDocument;
     m_compiler.requestSymbols(std::move(request));
 }
@@ -1967,10 +2177,11 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
         compilerRequest.version = document.version;
         compilerRequest.positionByte = positionByte;
         compilerRequest.projectIndexRequired = projectIndexRequired;
-        if (m_projectPlan.loaded) {
+        if (const ProjectPlan *plan =
+                projectPlanForPath(pathFromUtf8(path))) {
             compilerRequest.projectWorkingDirectory =
-                m_projectPlan.workingDirectory;
-            compilerRequest.includePaths = m_projectPlan.includePaths;
+                plan->workingDirectory;
+            compilerRequest.includePaths = plan->includePaths;
 
             if (projectIndexRequired) {
                 std::unordered_map<std::string, BaaDocument> openByPath;
@@ -1983,7 +2194,7 @@ void BaaLanguageServer::handleSemanticRequest(const Json &id,
                 }
                 bool originIncluded = false;
                 for (const std::filesystem::path &source :
-                     m_projectPlan.sourceFiles) {
+                     plan->sourceFiles) {
                     BaaSemanticRequest::ProjectSource projectSource;
                     projectSource.filePath = utf8FromPath(source);
                     const std::string comparable = comparablePath(source);

@@ -34,6 +34,10 @@ int main()
                        "string", "number", "operator", "function", "variable",
                        "parameter", "property", "enumMember"}));
     CHECK(messages[0]["result"]["capabilities"]["workspaceSymbolProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["workspace"]
+              ["workspaceFolders"]["supported"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["workspace"]
+              ["workspaceFolders"]["changeNotifications"] == true);
     CHECK(messages[0]["result"]["capabilities"]["hoverProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["definitionProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["referencesProvider"] == true);

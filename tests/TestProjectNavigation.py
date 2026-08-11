@@ -31,9 +31,11 @@ def read_message(process):
     return json.loads(process.stdout.read(length).decode("utf-8"))
 
 
-def read_response(process, request_id):
+def read_response(process, request_id, observed=None):
     for _ in range(30):
         message = read_message(process)
+        if observed is not None:
+            observed.append(message)
         if message.get("id") == request_id:
             return message
     raise RuntimeError(f"Baa-LSP did not answer request {request_id}")
@@ -70,9 +72,15 @@ def main():
         header = source_dir / "واجهة.baahd"
         caller = source_dir / "الرئيسية.baa"
         implementation = source_dir / "الحساب.baa"
+        refreshed_source = source_dir / "الإضافي.baa"
 
-        manifest.write_text(
-            """
+        second_root = root / "مساحة ثانية"
+        second_source_dir = second_root / "مصدر"
+        second_source_dir.mkdir(parents=True)
+        second_manifest = second_root / "مشروع.تكوين"
+        second_source = second_source_dir / "الثاني.baa"
+
+        initial_manifest = """
 [المشروع]
 الاسم = "تطبيق"
 الإصدار = "1.0.0"
@@ -88,9 +96,8 @@ def main():
 
 [البناء]
 المخرج = "بناء"
-""".lstrip(),
-            encoding="utf-8",
-        )
+""".lstrip()
+        manifest.write_text(initial_manifest, encoding="utf-8")
         header.write_text(
             "خارجي صحيح ضاعف(صحيح قيمة).\n", encoding="utf-8"
         )
@@ -111,6 +118,28 @@ def main():
         )
         caller.write_text(caller_text, encoding="utf-8")
         implementation.write_text(implementation_text, encoding="utf-8")
+        refreshed_source.write_text(
+            "صحيح بعد_التحديث() { إرجع ٧. }\n", encoding="utf-8"
+        )
+        second_manifest.write_text(
+            """
+[المشروع]
+الاسم = "ثانوي"
+الإصدار = "1.0.0"
+
+[الأهداف.ثانوي]
+النوع = "تنفيذي"
+المدخل = "مصدر/الثاني.baa"
+
+[البناء]
+المخرج = "بناء"
+""".lstrip(),
+            encoding="utf-8",
+        )
+        second_source.write_text(
+            "صحيح من_المساحة_الثانية() { إرجع ٢. }\n",
+            encoding="utf-8",
+        )
 
         environment = os.environ.copy()
         environment["PATH"] = (
@@ -143,6 +172,9 @@ def main():
         )
         initialized = read_response(process, 1)
         assert initialized["result"]["capabilities"]["workspaceSymbolProvider"] is True
+        workspace_capability = initialized["result"]["capabilities"]["workspace"]
+        assert workspace_capability["workspaceFolders"]["supported"] is True
+        assert workspace_capability["workspaceFolders"]["changeNotifications"] is True
         send_message(
             process,
             {
@@ -193,6 +225,92 @@ def main():
             comparable_uri(caller.resolve().as_uri()),
             comparable_uri(implementation.resolve().as_uri()),
         }, project_symbols
+
+        refreshed_manifest = initial_manifest.replace(
+            'يعتمد_على = ["حساب"]',
+            'يعتمد_على = ["حساب", "إضافي"]',
+        ).replace(
+            '[البناء]\nالمخرج = "بناء"',
+            '[الأهداف.إضافي]\n'
+            'النوع = "مكتبة"\n'
+            'المدخل = "مصدر عربي/الإضافي.baa"\n\n'
+            '[البناء]\nالمخرج = "بناء"',
+        )
+        manifest.write_text(refreshed_manifest, encoding="utf-8")
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWatchedFiles",
+                "params": {
+                    "changes": [{"uri": manifest.resolve().as_uri(), "type": 2}]
+                },
+            },
+        )
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 22,
+                "method": "workspace/symbol",
+                "params": {"query": "بعد_التحديث"},
+            },
+        )
+        refreshed_symbols = read_response(process, 22)["result"]
+        assert len(refreshed_symbols) == 1, refreshed_symbols
+        assert comparable_uri(
+            refreshed_symbols[0]["location"]["uri"]
+        ) == comparable_uri(refreshed_source.resolve().as_uri())
+
+        second_folder = {
+            "uri": second_root.resolve().as_uri(),
+            "name": second_root.name,
+        }
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWorkspaceFolders",
+                "params": {
+                    "event": {"added": [second_folder], "removed": []}
+                },
+            },
+        )
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 23,
+                "method": "workspace/symbol",
+                "params": {"query": "من_المساحة_الثانية"},
+            },
+        )
+        second_symbols = read_response(process, 23)["result"]
+        assert len(second_symbols) == 1, second_symbols
+        assert comparable_uri(
+            second_symbols[0]["location"]["uri"]
+        ) == comparable_uri(second_source.resolve().as_uri())
+
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWorkspaceFolders",
+                "params": {
+                    "event": {"added": [], "removed": [second_folder]}
+                },
+            },
+        )
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 24,
+                "method": "workspace/symbol",
+                "params": {"query": "من_المساحة_الثانية"},
+            },
+        )
+        assert read_response(process, 24)["result"] == []
 
         unsaved_caller_text = (
             caller_text
@@ -353,6 +471,35 @@ def main():
         )
         collision = read_response(process, 7)
         assert collision["error"]["code"] == -32602, collision
+
+        manifest.write_text("[بيان غير صالح\n", encoding="utf-8")
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "method": "workspace/didChangeWatchedFiles",
+                "params": {
+                    "changes": [{"uri": manifest.resolve().as_uri(), "type": 2}]
+                },
+            },
+        )
+        send_message(
+            process,
+            {
+                "jsonrpc": "2.0",
+                "id": 25,
+                "method": "workspace/symbol",
+                "params": {"query": "بعد_التحديث"},
+            },
+        )
+        reload_messages = []
+        assert read_response(process, 25, reload_messages)["result"] == []
+        assert any(
+            message.get("method") == "window/logMessage"
+            and message.get("params", {}).get("type") == 2
+            and "Takween" in message.get("params", {}).get("message", "")
+            for message in reload_messages
+        ), reload_messages
 
         send_message(
             process,

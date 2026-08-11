@@ -54,10 +54,12 @@
 - [ ] Incremental document overlays or an in-process Baa frontend API.
 - [x] Cancellation across LSP, Baa-LSP, and Baa analysis, with active compiler
   process termination and immediate worker recovery proven on Windows/Linux.
-- [ ] Workspace folders and Takween project context.
+- [x] Workspace folders and Takween project context.
   - [x] Load the initial project's exact source/include closure from
     `takween-build-plan-v1`.
-  - [ ] Refresh changed manifests and support multiple dynamic workspace folders.
+  - [x] Refresh `مشروع.تكوين`/`تكوين.قفل`, support multiple dynamic workspace
+    folders, select the nearest owning plan per document, and discard failed
+    reloads visibly instead of retaining a stale Takween closure.
 - [x] Full semantic tokens for compiler-owned lexical and identifier roles.
 - [x] Folding and selection ranges through compiler-owned
   `structure-json-v1`, with strict validation, shared per-version caching,

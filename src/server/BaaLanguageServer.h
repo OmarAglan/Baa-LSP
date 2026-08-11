@@ -53,6 +53,8 @@ private:
     void handleDidChange(const Json &params);
     void handleDidSave(const Json &params);
     void handleDidClose(const Json &params);
+    void handleDidChangeWorkspaceFolders(const Json &params);
+    void handleDidChangeWatchedFiles(const Json &params);
     void handleDocumentSymbol(const Json &id, const Json &params);
     void handleSemanticTokensFull(const Json &id, const Json &params);
     void handleFoldingRange(const Json &id, const Json &params);
@@ -68,7 +70,12 @@ private:
                                const Json &params,
                                SemanticReplyKind kind);
     void handleCancelRequest(const Json &params);
-    void loadProjectPlan(const Json &initializeParams);
+    void initializeWorkspace(const Json &initializeParams);
+    bool addWorkspaceRoot(const std::filesystem::path &root);
+    bool removeWorkspaceRoot(const std::filesystem::path &root);
+    bool loadProjectPlan(const std::filesystem::path &root,
+                         bool reportMissingManifest);
+    void invalidateProjectContext(const std::string &message);
 
     void analyze(const BaaDocument &document);
     void onAnalysisFinished(BaaAnalysisResult result);
@@ -280,9 +287,14 @@ private:
         std::vector<std::string> includePaths;
         bool loaded{};
     };
+    const ProjectPlan *projectPlanForPath(
+        const std::filesystem::path &path) const;
+    bool hasLoadedProjectPlan() const;
     std::string m_takweenProgram;
     std::filesystem::path m_applicationDirectory;
-    ProjectPlan m_projectPlan;
+    Json m_initializationOptions = Json::object();
+    std::unordered_map<std::string, std::filesystem::path> m_workspaceRoots;
+    std::unordered_map<std::string, ProjectPlan> m_projectPlans;
     ProcessRunner m_projectRunner;
     std::mutex m_callbackMutex;
     MessageCallback m_messageCallback;
