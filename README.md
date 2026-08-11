@@ -59,6 +59,20 @@ required only for process-level protocol tests. Hosted CI additionally builds
 the pinned Baa, Nazm, and Takween revisions and makes the real compiler and
 project-navigation suites mandatory on both Windows and Linux.
 
+## Install and package
+
+```sh
+cmake --install build --prefix dist/baa-lsp
+cmake --build build --target package
+```
+
+The install tree places the headless server under `bin/` and its documentation
+under `share/`. CPack produces a versioned ZIP on Windows and `.tar.gz` on
+Linux. Hosted CI runs the full independent Python protocol client against the
+installed binary—not the build-tree executable—before publishing either
+archive. Baa and Takween remain separately discoverable ecosystem tools; the
+server package does not duplicate their files.
+
 ## Run
 
 ```text

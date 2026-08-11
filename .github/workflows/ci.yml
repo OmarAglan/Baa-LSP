@@ -105,3 +105,27 @@ jobs:
 
       - name: Test
         run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Install and smoke the packaged server
+        shell: pwsh
+        run: |
+          cmake --install build --config Release --prefix dist/baa-lsp
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          $server = (Resolve-Path ("dist/baa-lsp/bin/baa-lsp" + $suffix)).Path
+          $compiler = (Resolve-Path ("build/tests/baa_lsp_fake_compiler" + $suffix)).Path
+          python tests/TestStdioProtocol.py $server $compiler
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($IsWindows) {
+            python tests/TestWindowsRuntime.py $server
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+
+      - name: Build standalone archive
+        run: cmake --build build --config Release --target package
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Baa-LSP-${{ runner.os }}-x86_64
+          path: build/Baa-LSP-0.1.0-*
+          if-no-files-found: error

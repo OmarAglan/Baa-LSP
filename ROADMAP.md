@@ -66,4 +66,7 @@
 - [x] Qalam-managed crash recovery with capped backoff, unsaved-document reopen,
   a stable-service reset window, and a three-attempt restart limit.
 - [ ] Telemetry-free structured server logs.
-- [ ] Windows/Linux packaging with Qalam and independent client smoke tests.
+- [x] Standalone Windows/Linux install trees and versioned archives with the
+  independent Python protocol client running against the installed server.
+- [ ] Publish a hosted Windows/Linux receipt for the implemented Qalam bundle;
+  the local Windows ZIP already passes an isolated Qalam + Baa-LSP smoke.

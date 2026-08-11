@@ -20,6 +20,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(nlohmann_json)
 
 find_package(Threads REQUIRED)
+include(GNUInstallDirs)
 
 option(BAA_LSP_BUILD_TESTS "Build Baa-LSP tests" ON)
 set(BAA_LSP_BAA_EXECUTABLE "" CACHE FILEPATH
@@ -55,7 +56,33 @@ add_executable(baa-lsp
 target_link_libraries(baa-lsp PRIVATE baa_lsp_core)
 baa_lsp_harden_windows_runtime(baa-lsp)
 
-install(TARGETS baa-lsp RUNTIME DESTINATION bin)
+install(TARGETS baa-lsp RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES README.md ROADMAP.md
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/baa-lsp)
+install(DIRECTORY docs/
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/doc/baa-lsp)
+install(FILES assets/branding/icons/baa-lsp-64.png
+    DESTINATION ${CMAKE_INSTALL_DATADIR}/baa-lsp/branding)
+
+if(WIN32)
+    set(BAA_LSP_PACKAGE_SYSTEM "windows-x86_64")
+elseif(APPLE)
+    set(BAA_LSP_PACKAGE_SYSTEM "macos-${CMAKE_SYSTEM_PROCESSOR}")
+else()
+    set(BAA_LSP_PACKAGE_SYSTEM "linux-${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+set(CPACK_PACKAGE_NAME "Baa-LSP")
+set(CPACK_PACKAGE_VENDOR "Baa Ecosystem")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_FILE_NAME
+    "Baa-LSP-${PROJECT_VERSION}-${BAA_LSP_PACKAGE_SYSTEM}")
+set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY ON)
+if(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+else()
+    set(CPACK_GENERATOR "TGZ")
+endif()
+include(CPack)
 
 if(BAA_LSP_BUILD_TESTS)
     enable_testing()
