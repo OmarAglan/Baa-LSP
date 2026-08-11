@@ -8,7 +8,9 @@
 - [x] Track versioned full-text documents.
 - [x] Bridge live diagnostics through Baa's unsaved-source contract.
 - [x] Convert UTF-8 byte spans to UTF-16 LSP ranges.
-- [ ] Complete process-level protocol fixtures on Windows and Linux.
+- [x] Complete process-level protocol fixtures on Windows and Linux, including
+  real Baa contracts, Takween project navigation, Arabic paths, and active
+  compiler-process cancellation/recovery.
 - [x] Connect Qalam and remove its direct compiler-analysis transport.
 
 ## 0.2 — Symbols and completion
@@ -50,7 +52,8 @@
 ## 0.4 — Production admission
 
 - [ ] Incremental document overlays or an in-process Baa frontend API.
-- [ ] Cancellation across LSP, Baa-LSP, and Baa analysis.
+- [x] Cancellation across LSP, Baa-LSP, and Baa analysis, with active compiler
+  process termination and immediate worker recovery proven on Windows/Linux.
 - [ ] Workspace folders and Takween project context.
   - [x] Load the initial project's exact source/include closure from
     `takween-build-plan-v1`.

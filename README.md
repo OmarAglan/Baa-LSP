@@ -54,7 +54,10 @@ cmake --build build
 ctest --test-dir build --output-on-failure
 ```
 
-The build fetches the pinned header-only `nlohmann/json` dependency. Python is required only for process-level protocol tests.
+The build fetches the pinned header-only `nlohmann/json` dependency. Python is
+required only for process-level protocol tests. Hosted CI additionally builds
+the pinned Baa, Nazm, and Takween revisions and makes the real compiler and
+project-navigation suites mandatory on both Windows and Linux.
 
 ## Run
 

@@ -4,6 +4,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import time
 
 
 def send_message(process, message):
@@ -453,11 +454,38 @@ def main():
             "jsonrpc": "2.0", "id": 3, "method": "textDocument/documentSymbol",
             "params": {"textDocument": {"uri": uri}},
         })
+        # Wait until the fake compiler proves that it entered its five-second
+        # symbol-analysis delay. Cancellation must terminate that active
+        # process, not only discard a queued reply.
+        active_marker = pathlib.Path(directory, ".baa-lsp-active")
+        marker_deadline = time.monotonic() + 3.0
+        while not active_marker.exists() and time.monotonic() < marker_deadline:
+            time.sleep(0.02)
+        assert active_marker.exists()
         send_message(process, {
             "jsonrpc": "2.0", "method": "$/cancelRequest", "params": {"id": 3},
         })
         cancelled = read_response(process, 3)
         assert cancelled["error"]["code"] == -32800
+
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 4},
+                "contentChanges": [{
+                    "text": "صحيح الرئيسية() {\n    إرجع ٠.\n}\n",
+                }],
+            },
+        })
+        recovery_started = time.monotonic()
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 30,
+            "method": "textDocument/documentSymbol",
+            "params": {"textDocument": {"uri": uri}},
+        })
+        recovered = read_response(process, 30)
+        assert recovered["result"][0]["name"] == "الرئيسية"
+        assert time.monotonic() - recovery_started < 3.0
 
         send_message(process, {"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": None})
         assert read_response(process, 4)["id"] == 4

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
 #include <iostream>
 #include <iterator>
 #include <string>
@@ -365,7 +366,8 @@ int main(int argc, char **argv)
     }
     if (dumpSymbols) {
         if (source.find("انتظر") != std::string::npos) {
-            std::this_thread::sleep_for(std::chrono::seconds(2));
+            std::ofstream(".baa-lsp-active", std::ios::binary) << "active\n";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
         }
         const std::string name = "الرئيسية";
         const std::size_t start = source.find(name);
