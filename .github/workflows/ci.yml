@@ -41,14 +41,21 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Add Windows MinGW toolchain
+      - name: Select Windows MinGW toolchain
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if (-not (Test-Path 'C:\msys64\ucrt64\bin\gcc.exe')) {
-            throw 'The Windows runner does not provide the required UCRT64 MinGW toolchain.'
+          $gcc = Get-Command gcc.exe -ErrorAction SilentlyContinue
+          $make = Get-Command mingw32-make.exe -ErrorAction SilentlyContinue
+          if (-not $gcc -or -not $make) {
+            throw 'The Windows runner does not provide GCC and mingw32-make on PATH.'
           }
-          'C:\msys64\ucrt64\bin' | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          @($gcc.Source, $make.Source) |
+            ForEach-Object { Split-Path -Parent $_ } |
+            Select-Object -Unique |
+            ForEach-Object {
+              $_ | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+            }
 
       - name: Configure Baa and Nazm
         shell: pwsh
