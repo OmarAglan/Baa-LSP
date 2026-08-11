@@ -80,3 +80,9 @@ versioned archives passed on both hosts in
 The pinned server was then bundled at Qalam's automatic discovery path and both
 combined artifacts passed in
 [Qalam CI 31506739091](https://github.com/OmarAglan/Qalam-IDE/actions/runs/31506739091).
+
+**Dynamic workspace receipt (2026-08-11):** add/reload/remove and visible failed
+manifest refresh passed with real Takween on Windows/Linux in
+[Baa-LSP CI 31509393734](https://github.com/OmarAglan/Baa-LSP/actions/runs/31509393734).
+The pinned consumer, its multi-root Qt fixture, and both combined packages passed
+in [Qalam CI 31509433467](https://github.com/OmarAglan/Qalam-IDE/actions/runs/31509433467).
