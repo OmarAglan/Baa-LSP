@@ -63,5 +63,7 @@
   `structure-json-v1`, with strict validation, shared per-version caching,
   cancellation, stale-result rejection, and UTF-16 conversion.
 - [ ] Compiler-owned inlay hints.
-- [ ] Crash recovery, restart limits, telemetry-free structured logs.
+- [x] Qalam-managed crash recovery with capped backoff, unsaved-document reopen,
+  a stable-service reset window, and a three-attempt restart limit.
+- [ ] Telemetry-free structured server logs.
 - [ ] Windows/Linux packaging with Qalam and independent client smoke tests.
