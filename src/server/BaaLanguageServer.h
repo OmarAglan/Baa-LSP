@@ -59,6 +59,7 @@ private:
     void handleSemanticTokensFull(const Json &id, const Json &params);
     void handleFoldingRange(const Json &id, const Json &params);
     void handleSelectionRange(const Json &id, const Json &params);
+    void handleInlayHint(const Json &id, const Json &params);
     void handleStructureRequest(const Json &id, const Json &params,
                                 StructureReplyKind kind);
     void handleWorkspaceSymbol(const Json &id, const Json &params);
@@ -82,6 +83,7 @@ private:
     void onSymbolsFinished(BaaSymbolResult result);
     void onTokensFinished(BaaTokenResult result);
     void onStructureFinished(BaaStructureResult result);
+    void onInlayHintsFinished(BaaInlayHintResult result);
     void onCompletionDataFinished(BaaCompletionDataResult result);
     void onFormatFinished(BaaFormatResult result);
     void onSemanticFinished(BaaSemanticResult result);
@@ -102,6 +104,8 @@ private:
     void invalidateTokenRequests(const std::string &uri, int code,
                                  const std::string &message);
     void invalidateStructureRequests(const std::string &uri, int code,
+                                     const std::string &message);
+    void invalidateInlayHintRequests(const std::string &uri, int code,
                                      const std::string &message);
     void invalidateWorkspaceSymbolRequests(int code,
                                            const std::string &message);
@@ -186,6 +190,30 @@ private:
         m_structureRequests;
     std::unordered_map<std::string, CachedStructure> m_structureCache;
     std::uint64_t m_nextStructureToken{1};
+    struct PendingInlayHintReply
+    {
+        Json id;
+        std::size_t startByte{};
+        std::size_t endByte{};
+    };
+    struct PendingInlayHintRequest
+    {
+        std::vector<PendingInlayHintReply> replies;
+        std::string uri;
+        int version{};
+    };
+    struct CachedInlayHints
+    {
+        int version{};
+        std::string text;
+        bool complete{};
+        Json hints = Json::array();
+    };
+    std::mutex m_inlayHintMutex;
+    std::unordered_map<std::uint64_t, PendingInlayHintRequest>
+        m_inlayHintRequests;
+    std::unordered_map<std::string, CachedInlayHints> m_inlayHintCache;
+    std::uint64_t m_nextInlayHintToken{1};
     struct WorkspaceSymbolIndexEntry
     {
         int version{};

@@ -60,6 +60,7 @@ def main():
         assert response["result"]["capabilities"]["documentSymbolProvider"] is True
         assert response["result"]["capabilities"]["foldingRangeProvider"] is True
         assert response["result"]["capabilities"]["selectionRangeProvider"] is True
+        assert response["result"]["capabilities"]["inlayHintProvider"] is True
         assert response["result"]["capabilities"]["semanticTokensProvider"] == {
             "legend": {
                 "tokenTypes": [
@@ -319,6 +320,57 @@ def main():
         assert semantic_diagnostics["params"]["version"] == 2
 
         send_message(process, {
+            "jsonrpc": "2.0", "id": 25,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 2, "character": 0},
+                    "end": {"line": 2, "character": 19},
+                },
+            },
+        })
+        hints = read_response(process, 25)["result"]
+        assert hints == [
+            {
+                "position": {"line": 2, "character": 14},
+                "label": "أول:",
+                "kind": 2,
+                "paddingRight": True,
+                "data": {
+                    "schema_version": "inlay-hints-json-v1",
+                    "parameter": "أول",
+                    "complete": True,
+                },
+            },
+            {
+                "position": {"line": 2, "character": 17},
+                "label": "ثان:",
+                "kind": 2,
+                "paddingRight": True,
+                "data": {
+                    "schema_version": "inlay-hints-json-v1",
+                    "parameter": "ثان",
+                    "complete": True,
+                },
+            },
+        ]
+
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 26,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 2, "character": 17},
+                    "end": {"line": 2, "character": 18},
+                },
+            },
+        })
+        filtered_hints = read_response(process, 26)["result"]
+        assert [hint["label"] for hint in filtered_hints] == ["ثان:"]
+
+        send_message(process, {
             "jsonrpc": "2.0", "id": 6, "method": "textDocument/hover",
             "params": {
                 "textDocument": {"uri": uri},
@@ -486,6 +538,45 @@ def main():
         recovered = read_response(process, 30)
         assert recovered["result"][0]["name"] == "الرئيسية"
         assert time.monotonic() - recovery_started < 3.0
+
+        delayed_inlay_source = (
+            "صحيح اجمع(صحيح أول، صحيح ثان) { إرجع أول + ثان. }\n"
+            "صحيح الرئيسية() { انتظر. إرجع اجمع(١، ٢). }\n"
+        )
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 5},
+                "contentChanges": [{"text": delayed_inlay_source}],
+            },
+        })
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 31,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 0, "character": 0},
+                    "end": {"line": 2, "character": 0},
+                },
+            },
+        })
+        inlay_marker = pathlib.Path(directory, ".baa-lsp-inlay-active")
+        marker_deadline = time.monotonic() + 3.0
+        while not inlay_marker.exists() and time.monotonic() < marker_deadline:
+            time.sleep(0.02)
+        assert inlay_marker.exists()
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 6},
+                "contentChanges": [{
+                    "text": "صحيح الرئيسية() { إرجع ٠. }\n",
+                }],
+            },
+        })
+        stale_inlay = read_response(process, 31)
+        assert stale_inlay["error"]["code"] == -32801
 
         send_message(process, {"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": None})
         assert read_response(process, 4)["id"] == 4

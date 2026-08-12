@@ -64,7 +64,10 @@
 - [x] Folding and selection ranges through compiler-owned
   `structure-json-v1`, with strict validation, shared per-version caching,
   cancellation, stale-result rejection, and UTF-16 conversion.
-- [ ] Compiler-owned inlay hints.
+- [x] Compiler-owned Arabic parameter-name hints through
+  `inlay-hints-json-v1`, with strict contract validation, Takween include
+  context, shared per-version caching, LSP range filtering, cancellation,
+  stale-result rejection, and UTF-16 conversion without source inference.
 - [x] Qalam-managed crash recovery with capped backoff, unsaved-document reopen,
   a stable-service reset window, and a three-attempt restart limit.
 - [ ] Telemetry-free structured server logs.

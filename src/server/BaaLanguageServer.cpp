@@ -187,6 +187,43 @@ bool lspRangesIntersect(const std::pair<std::size_t, std::size_t> &left,
     return left.first <= right.second and right.first <= left.second;
 }
 
+Json inlayHintsForRange(std::string_view text,
+                        const Json &hints,
+                        std::size_t startByte,
+                        std::size_t endByte,
+                        bool complete)
+{
+    Json converted = Json::array();
+    if (not hints.is_array()) return converted;
+    for (const Json &hint : hints) {
+        const auto position = hint.find("position_byte");
+        if (position == hint.end()) continue;
+        std::size_t byte{};
+        if (position->is_number_unsigned()) {
+            byte = position->get<std::size_t>();
+        } else if (position->is_number_integer()) {
+            const std::int64_t value = position->get<std::int64_t>();
+            if (value < 0) continue;
+            byte = static_cast<std::size_t>(value);
+        } else {
+            continue;
+        }
+        if (byte < startByte or byte > endByte or byte > text.size()) continue;
+        converted.push_back({
+            {"position", PositionEncoding::utf16PositionForByteOffset(text, byte)},
+            {"label", hint.value("label", "")},
+            {"kind", 2},
+            {"paddingRight", hint.value("padding_right", false)},
+            {"data", {
+                {"schema_version", "inlay-hints-json-v1"},
+                {"parameter", hint.value("parameter", "")},
+                {"complete", complete}
+            }}
+        });
+    }
+    return converted;
+}
+
 std::string percentEncodedPath(std::string_view value)
 {
     constexpr char hex[] = "0123456789ABCDEF";
@@ -583,6 +620,10 @@ BaaLanguageServer::BaaLanguageServer()
         [this](BaaStructureResult result) {
             onStructureFinished(std::move(result));
         });
+    m_compiler.setInlayHintCallback(
+        [this](BaaInlayHintResult result) {
+            onInlayHintsFinished(std::move(result));
+        });
     m_compiler.setCompletionDataCallback(
         [this](BaaCompletionDataResult result) {
             onCompletionDataFinished(std::move(result));
@@ -599,6 +640,7 @@ BaaLanguageServer::~BaaLanguageServer()
     m_compiler.setSymbolCallback({});
     m_compiler.setTokenCallback({});
     m_compiler.setStructureCallback({});
+    m_compiler.setInlayHintCallback({});
     m_compiler.setCompletionDataCallback({});
     m_compiler.setFormatCallback({});
     m_compiler.setSemanticCallback({});
@@ -880,6 +922,7 @@ void BaaLanguageServer::invalidateProjectContext(const std::string &message)
     invalidateWorkspaceSymbolRequests(ContentModified, message);
     invalidateSymbolRequests({}, ContentModified, message);
     invalidateTokenRequests({}, ContentModified, message);
+    invalidateInlayHintRequests({}, ContentModified, message);
     invalidateSemanticRequests({}, ContentModified, message);
     {
         std::scoped_lock lock(m_symbolRequestsMutex);
@@ -889,6 +932,10 @@ void BaaLanguageServer::invalidateProjectContext(const std::string &message)
     {
         std::scoped_lock lock(m_tokenRequestsMutex);
         m_tokenCache.clear();
+    }
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        m_inlayHintCache.clear();
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -959,6 +1006,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
                 {"documentSymbolProvider", true},
                 {"foldingRangeProvider", true},
                 {"selectionRangeProvider", true},
+                {"inlayHintProvider", true},
                 {"semanticTokensProvider", {
                     {"legend", {
                         {"tokenTypes", Json::array({
@@ -1028,6 +1076,9 @@ void BaaLanguageServer::handleRequest(const Json &message)
         invalidateStructureRequests(
             {}, RequestCancelled,
             "Structural editing request cancelled during shutdown.");
+        invalidateInlayHintRequests(
+            {}, RequestCancelled,
+            "Inlay hint request cancelled during shutdown.");
         invalidateWorkspaceSymbolRequests(
             RequestCancelled, "Workspace symbol request cancelled during shutdown.");
         invalidateCompletionRequests({}, RequestCancelled,
@@ -1063,6 +1114,10 @@ void BaaLanguageServer::handleRequest(const Json &message)
     }
     if (method == "textDocument/selectionRange") {
         handleSelectionRange(id, objectValue(message, "params"));
+        return;
+    }
+    if (method == "textDocument/inlayHint") {
+        handleInlayHint(id, objectValue(message, "params"));
         return;
     }
     if (method == "workspace/symbol") {
@@ -1223,6 +1278,10 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
         document.uri,
         ContentModified,
         "Document opened before structural editing data was ready.");
+    invalidateInlayHintRequests(
+        document.uri,
+        ContentModified,
+        "Document opened before inlay hints were ready.");
     {
         std::scoped_lock lock(m_tokenRequestsMutex);
         m_tokenCache.erase(document.uri);
@@ -1230,6 +1289,10 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
     {
         std::scoped_lock lock(m_structureMutex);
         m_structureCache.erase(document.uri);
+    }
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        m_inlayHintCache.erase(document.uri);
     }
     invalidateWorkspaceSymbolRequests(
         ContentModified,
@@ -1272,6 +1335,9 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     invalidateStructureRequests(
         uri, ContentModified,
         "Document changed before structural editing data was ready.");
+    invalidateInlayHintRequests(
+        uri, ContentModified,
+        "Document changed before inlay hints were ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document change.");
@@ -1293,6 +1359,10 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     {
         std::scoped_lock lock(m_structureMutex);
         m_structureCache.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        m_inlayHintCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1325,6 +1395,9 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     invalidateStructureRequests(
         uri, ContentModified,
         "Document closed before structural editing data was ready.");
+    invalidateInlayHintRequests(
+        uri, ContentModified,
+        "Document closed before inlay hints were ready.");
     invalidateWorkspaceSymbolRequests(
         ContentModified,
         "Workspace symbols became obsolete after a document closed.");
@@ -1351,6 +1424,10 @@ void BaaLanguageServer::handleDidClose(const Json &params)
     {
         std::scoped_lock lock(m_structureMutex);
         m_structureCache.erase(uri);
+    }
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        m_inlayHintCache.erase(uri);
     }
     {
         std::scoped_lock lock(m_semanticMutex);
@@ -1577,6 +1654,90 @@ void BaaLanguageServer::handleStructureRequest(const Json &id,
     m_compiler.requestStructure({
         token, uri, path, document.text, document.version
     });
+}
+
+void BaaLanguageServer::handleInlayHint(const Json &id, const Json &params)
+{
+    const std::string uri =
+        stringValue(objectValue(params, "textDocument"), "uri");
+    if (uri.empty()) {
+        sendError(id, InvalidParams, "textDocument.uri is required.");
+        return;
+    }
+
+    BaaDocument document;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(uri)) {
+            sendError(id, InvalidParams, "Document is not open in Baa-LSP.");
+            return;
+        }
+        document = m_documents.document(uri);
+    }
+    const auto range = lspByteRange(
+        document.text, params.value("range", Json(nullptr)));
+    if (not range) {
+        sendError(id, InvalidParams,
+                  "inlayHint requires a valid UTF-16 document range.");
+        return;
+    }
+
+    CachedInlayHints cached;
+    bool hasCached = false;
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        const auto existing = m_inlayHintCache.find(uri);
+        if (existing != m_inlayHintCache.end() and
+            existing->second.version == document.version) {
+            cached = existing->second;
+            hasCached = true;
+        }
+    }
+    if (hasCached) {
+        sendResult(id, inlayHintsForRange(
+            cached.text, cached.hints, range->first, range->second,
+            cached.complete));
+        return;
+    }
+
+    const std::string path = localPathForUri(uri);
+    if (path.empty()) {
+        sendError(id, InvalidParams,
+                  "Baa-LSP supports local file:// documents only.");
+        return;
+    }
+
+    std::uint64_t token{};
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        for (auto &[existingToken, pending] : m_inlayHintRequests) {
+            (void)existingToken;
+            if (pending.uri == uri and pending.version == document.version) {
+                pending.replies.push_back(
+                    {id, range->first, range->second});
+                return;
+            }
+        }
+        token = m_nextInlayHintToken++;
+        if (token == 0) token = m_nextInlayHintToken++;
+        m_inlayHintRequests.emplace(
+            token,
+            PendingInlayHintRequest{
+                {{id, range->first, range->second}}, uri, document.version
+            });
+    }
+
+    BaaInlayHintRequest request;
+    request.token = token;
+    request.uri = uri;
+    request.filePath = path;
+    request.text = document.text;
+    request.version = document.version;
+    if (const ProjectPlan *plan = projectPlanForPath(pathFromUtf8(path))) {
+        request.projectWorkingDirectory = plan->workingDirectory;
+        request.includePaths = plan->includePaths;
+    }
+    m_compiler.requestInlayHints(std::move(request));
 }
 
 void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
@@ -2320,6 +2481,28 @@ void BaaLanguageServer::handleCancelRequest(const Json &params)
     }
     if (structureTokenToCancel != 0)
         m_compiler.cancelStructure(structureTokenToCancel);
+    std::uint64_t inlayHintTokenToCancel = 0;
+    if (not cancelled) {
+        std::scoped_lock lock(m_inlayHintMutex);
+        for (auto request = m_inlayHintRequests.begin();
+             request != m_inlayHintRequests.end(); ++request) {
+            const auto reply = std::ranges::find_if(
+                request->second.replies,
+                [&idIt](const PendingInlayHintReply &candidate) {
+                    return candidate.id == *idIt;
+                });
+            if (reply == request->second.replies.end()) continue;
+            request->second.replies.erase(reply);
+            cancelled = true;
+            if (request->second.replies.empty()) {
+                inlayHintTokenToCancel = request->first;
+                m_inlayHintRequests.erase(request);
+            }
+            break;
+        }
+    }
+    if (inlayHintTokenToCancel != 0)
+        m_compiler.cancelInlayHints(inlayHintTokenToCancel);
     std::uint64_t formatTokenToCancel = 0;
     if (not cancelled) {
         std::scoped_lock lock(m_formatMutex);
@@ -2603,6 +2786,52 @@ void BaaLanguageServer::onStructureFinished(BaaStructureResult result)
             sendResult(reply.id, PositionEncoding::baaSelectionRangesToLsp(
                 result.text, result.selectionRanges, reply.positions));
         }
+    }
+}
+
+void BaaLanguageServer::onInlayHintsFinished(BaaInlayHintResult result)
+{
+    PendingInlayHintRequest pending;
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        const auto request = m_inlayHintRequests.find(result.token);
+        if (request == m_inlayHintRequests.end()) return;
+        pending = std::move(request->second);
+        m_inlayHintRequests.erase(request);
+    }
+
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        if (not m_documents.contains(pending.uri) or
+            m_documents.document(pending.uri).version != pending.version) {
+            for (const PendingInlayHintReply &reply : pending.replies) {
+                sendError(reply.id, ContentModified,
+                          "Document changed before inlay hints were ready.");
+            }
+            return;
+        }
+    }
+    if (not result.errorMessage.empty()) {
+        for (const PendingInlayHintReply &reply : pending.replies)
+            sendError(reply.id, InternalError, result.errorMessage);
+        return;
+    }
+
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        m_inlayHintCache.insert_or_assign(
+            pending.uri,
+            CachedInlayHints{
+                pending.version,
+                result.text,
+                result.complete,
+                result.hints
+            });
+    }
+    for (const PendingInlayHintReply &reply : pending.replies) {
+        sendResult(reply.id, inlayHintsForRange(
+            result.text, result.hints, reply.startByte, reply.endByte,
+            result.complete));
     }
 }
 
@@ -3136,6 +3365,37 @@ void BaaLanguageServer::invalidateStructureRequests(
     for (const CancelledRequest &request : cancelled) {
         m_compiler.cancelStructure(request.token);
         for (const PendingStructureReply &reply : request.replies)
+            sendError(reply.id, code, message);
+    }
+}
+
+void BaaLanguageServer::invalidateInlayHintRequests(
+    const std::string &uri,
+    int code,
+    const std::string &message)
+{
+    struct CancelledRequest
+    {
+        std::uint64_t token{};
+        std::vector<PendingInlayHintReply> replies;
+    };
+    std::vector<CancelledRequest> cancelled;
+    {
+        std::scoped_lock lock(m_inlayHintMutex);
+        for (auto request = m_inlayHintRequests.begin();
+             request != m_inlayHintRequests.end();) {
+            if (uri.empty() or request->second.uri == uri) {
+                cancelled.push_back(
+                    {request->first, std::move(request->second.replies)});
+                request = m_inlayHintRequests.erase(request);
+            } else {
+                ++request;
+            }
+        }
+    }
+    for (const CancelledRequest &request : cancelled) {
+        m_compiler.cancelInlayHints(request.token);
+        for (const PendingInlayHintReply &reply : request.replies)
             sendError(reply.id, code, message);
     }
 }

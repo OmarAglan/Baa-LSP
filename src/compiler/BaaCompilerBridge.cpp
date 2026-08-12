@@ -307,6 +307,38 @@ bool validStructureRanges(std::string_view source,
     }
     return true;
 }
+
+bool validInlayHints(std::string_view source, const Json &hints)
+{
+    if (not hints.is_array()) return false;
+    bool hasPrevious = false;
+    std::size_t previousPosition{};
+    std::string previousParameter;
+    for (const Json &hint : hints) {
+        if (not hint.is_object() or
+            not stringFieldEquals(hint, "kind", "parameter") or
+            not hint.value("label", Json(nullptr)).is_string() or
+            not hint.value("parameter", Json(nullptr)).is_string() or
+            not hint.value("padding_right", Json(nullptr)).is_boolean())
+            return false;
+        std::size_t position{};
+        if (not nonnegativeSize(
+                hint.value("position_byte", Json(nullptr)), &position) or
+            not isUtf8Boundary(source, position))
+            return false;
+        const std::string label = hint["label"].get<std::string>();
+        const std::string parameter = hint["parameter"].get<std::string>();
+        if (label.empty() or parameter.empty()) return false;
+        if (hasPrevious and
+            (position < previousPosition or
+             (position == previousPosition and parameter < previousParameter)))
+            return false;
+        hasPrevious = true;
+        previousPosition = position;
+        previousParameter = parameter;
+    }
+    return true;
+}
 }
 
 BaaCompilerBridge::BaaCompilerBridge()
@@ -323,6 +355,7 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_pendingSymbols.clear();
         m_pendingTokens.clear();
         m_pendingStructure.clear();
+        m_pendingInlayHints.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
@@ -331,6 +364,7 @@ BaaCompilerBridge::~BaaCompilerBridge()
         m_symbolCallback = {};
         m_tokenCallback = {};
         m_structureCallback = {};
+        m_inlayHintCallback = {};
         m_completionDataCallback = {};
         m_formatCallback = {};
         m_semanticCallback = {};
@@ -382,6 +416,12 @@ void BaaCompilerBridge::setStructureCallback(StructureCallback callback)
     m_structureCallback = std::move(callback);
 }
 
+void BaaCompilerBridge::setInlayHintCallback(InlayHintCallback callback)
+{
+    std::scoped_lock lock(m_mutex);
+    m_inlayHintCallback = std::move(callback);
+}
+
 void BaaCompilerBridge::setCompletionDataCallback(CompletionDataCallback callback)
 {
     std::scoped_lock lock(m_mutex);
@@ -421,6 +461,12 @@ void BaaCompilerBridge::schedule(BaaAnalysisRequest request)
             [&request](const BaaStructureRequest &structureRequest) {
                 return structureRequest.uri == request.uri and
                        structureRequest.version != request.version;
+            });
+        std::erase_if(
+            m_pendingInlayHints,
+            [&request](const BaaInlayHintRequest &inlayRequest) {
+                return inlayRequest.uri == request.uri and
+                       inlayRequest.version != request.version;
             });
         std::erase_if(m_pendingFormats, [&request](const BaaFormatRequest &formatRequest) {
             return formatRequest.uri == request.uri and
@@ -472,6 +518,19 @@ void BaaCompilerBridge::requestStructure(BaaStructureRequest request)
         if (m_stopping) return;
         m_latestVersions.try_emplace(request.uri, request.version);
         m_pendingStructure.push_back(std::move(request));
+        ++m_scheduleSerial;
+    }
+    m_wake.notify_one();
+}
+
+void BaaCompilerBridge::requestInlayHints(BaaInlayHintRequest request)
+{
+    if (not request.isValid()) return;
+    {
+        std::scoped_lock lock(m_mutex);
+        if (m_stopping) return;
+        m_latestVersions.try_emplace(request.uri, request.version);
+        m_pendingInlayHints.push_back(std::move(request));
         ++m_scheduleSerial;
     }
     m_wake.notify_one();
@@ -564,6 +623,24 @@ void BaaCompilerBridge::cancelStructure(std::uint64_t token)
     m_wake.notify_one();
 }
 
+void BaaCompilerBridge::cancelInlayHints(std::uint64_t token)
+{
+    if (token == 0) return;
+    bool cancelActive = false;
+    {
+        std::scoped_lock lock(m_mutex);
+        std::erase_if(
+            m_pendingInlayHints,
+            [token](const BaaInlayHintRequest &request) {
+                return request.token == token;
+            });
+        cancelActive = m_activeInlayHintToken == token;
+        ++m_scheduleSerial;
+    }
+    if (cancelActive) m_runner.cancel();
+    m_wake.notify_one();
+}
+
 void BaaCompilerBridge::cancelFormat(std::uint64_t token)
 {
     if (token == 0) return;
@@ -613,6 +690,11 @@ void BaaCompilerBridge::cancel(const std::string &uri)
             [&uri](const BaaStructureRequest &request) {
                 return request.uri == uri;
             });
+        std::erase_if(
+            m_pendingInlayHints,
+            [&uri](const BaaInlayHintRequest &request) {
+                return request.uri == uri;
+            });
         std::erase_if(m_pendingFormats, [&uri](const BaaFormatRequest &request) {
             return request.uri == uri;
         });
@@ -636,6 +718,7 @@ void BaaCompilerBridge::cancelAll()
         m_pendingSymbols.clear();
         m_pendingTokens.clear();
         m_pendingStructure.clear();
+        m_pendingInlayHints.clear();
         m_pendingFormats.clear();
         m_pendingSemantic.clear();
         m_completionDataPending = false;
@@ -682,11 +765,13 @@ void BaaCompilerBridge::workerLoop()
         BaaSymbolRequest symbolRequest;
         BaaTokenRequest tokenRequest;
         BaaStructureRequest structureRequest;
+        BaaInlayHintRequest inlayHintRequest;
         BaaFormatRequest formatRequest;
         BaaSemanticRequest semanticRequest;
         bool isSymbolRequest = false;
         bool isTokenRequest = false;
         bool isStructureRequest = false;
+        bool isInlayHintRequest = false;
         bool isFormatRequest = false;
         bool isSemanticRequest = false;
         bool isCompletionDataRequest = false;
@@ -696,6 +781,7 @@ void BaaCompilerBridge::workerLoop()
                 return m_stopping or m_completionDataPending or
                        not m_pendingFormats.empty() or
                        not m_pendingSemantic.empty() or
+                       not m_pendingInlayHints.empty() or
                        not m_pendingStructure.empty() or
                        not m_pendingTokens.empty() or
                        not m_pendingSymbols.empty() or not m_pending.empty();
@@ -704,6 +790,7 @@ void BaaCompilerBridge::workerLoop()
 
             if (not m_completionDataPending and m_pendingFormats.empty() and
                 m_pendingSemantic.empty() and
+                m_pendingInlayHints.empty() and
                 m_pendingStructure.empty() and
                 m_pendingTokens.empty() and
                 m_pendingSymbols.empty()) {
@@ -726,6 +813,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingFormats.empty()) {
@@ -737,6 +825,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = formatRequest.token;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSemantic.empty()) {
@@ -748,8 +837,21 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = semanticRequest.token;
+            } else if (not m_pendingInlayHints.empty()) {
+                isInlayHintRequest = true;
+                inlayHintRequest = std::move(m_pendingInlayHints.front());
+                m_pendingInlayHints.pop_front();
+                m_activeUri = inlayHintRequest.uri;
+                m_activeVersion = inlayHintRequest.version;
+                m_activeSymbolToken = 0;
+                m_activeTokenToken = 0;
+                m_activeStructureToken = 0;
+                m_activeInlayHintToken = inlayHintRequest.token;
+                m_activeFormatToken = 0;
+                m_activeSemanticToken = 0;
             } else if (not m_pendingStructure.empty()) {
                 isStructureRequest = true;
                 structureRequest = std::move(m_pendingStructure.front());
@@ -759,6 +861,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = structureRequest.token;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingTokens.empty()) {
@@ -770,6 +873,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = tokenRequest.token;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else if (not m_pendingSymbols.empty()) {
@@ -781,6 +885,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = symbolRequest.token;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             } else {
@@ -793,6 +898,7 @@ void BaaCompilerBridge::workerLoop()
                 m_activeSymbolToken = 0;
                 m_activeTokenToken = 0;
                 m_activeStructureToken = 0;
+                m_activeInlayHintToken = 0;
                 m_activeFormatToken = 0;
                 m_activeSemanticToken = 0;
             }
@@ -840,6 +946,8 @@ void BaaCompilerBridge::workerLoop()
             ? formatRequest.filePath
             : isSemanticRequest
             ? semanticRequest.filePath
+            : isInlayHintRequest
+            ? inlayHintRequest.filePath
             : isStructureRequest
             ? structureRequest.filePath
             : isTokenRequest
@@ -849,6 +957,8 @@ void BaaCompilerBridge::workerLoop()
             ? formatRequest.text
             : isSemanticRequest
             ? semanticRequest.text
+            : isInlayHintRequest
+            ? inlayHintRequest.text
             : isStructureRequest
             ? structureRequest.text
             : isTokenRequest
@@ -858,6 +968,13 @@ void BaaCompilerBridge::workerLoop()
         std::vector<std::string> arguments;
         if (isFormatRequest) {
             arguments = {"--format=json", "--source-stdin=" + filePath};
+        } else if (isInlayHintRequest) {
+            arguments = {"--inlay-hints=json"};
+            for (const std::string &includePath : inlayHintRequest.includePaths) {
+                arguments.push_back("-I");
+                arguments.push_back(includePath);
+            }
+            arguments.push_back("--source-stdin=" + filePath);
         } else if (isStructureRequest) {
             arguments = {
                 "--dump-structure=json", "--source-stdin=" + filePath
@@ -889,12 +1006,76 @@ void BaaCompilerBridge::workerLoop()
             isSemanticRequest and
             not semanticRequest.projectWorkingDirectory.empty()
                 ? semanticRequest.projectWorkingDirectory
+                : isInlayHintRequest and
+                  not inlayHintRequest.projectWorkingDirectory.empty()
+                    ? inlayHintRequest.projectWorkingDirectory
                 : isTokenRequest and
                   not tokenRequest.projectWorkingDirectory.empty()
                     ? tokenRequest.projectWorkingDirectory
                     : sourcePath.parent_path();
         ProcessResult process = m_runner.run(
             compiler, arguments, workingDirectory, text);
+
+        if (isInlayHintRequest) {
+            BaaInlayHintResult result;
+            result.token = inlayHintRequest.token;
+            result.uri = inlayHintRequest.uri;
+            result.text = inlayHintRequest.text;
+            result.version = inlayHintRequest.version;
+            result.exitCode = process.exitCode;
+
+            if (not process.started) {
+                result.errorMessage = process.errorMessage.empty()
+                    ? "Baa compiler executable was not found."
+                    : process.errorMessage;
+            } else if (not process.cancelled) {
+                const Json parsed = Json::parse(
+                    process.standardOutput, nullptr, false);
+                const Json hints = parsed.is_object()
+                    ? parsed.value("hints", Json(nullptr))
+                    : Json(nullptr);
+                if (process.exitCode == 0 and
+                    not parsed.is_discarded() and parsed.is_object() and
+                    stringFieldEquals(
+                        parsed, "schema_version", "inlay-hints-json-v1") and
+                    parsed.value(
+                        "compiler_version", Json(nullptr)).is_string() and
+                    stringFieldEquals(parsed, "file", filePath) and
+                    stringFieldEquals(
+                        parsed, "position_encoding", "utf-8-bytes") and
+                    parsed.value("complete", Json(nullptr)).is_boolean() and
+                    validInlayHints(text, hints)) {
+                    result.complete = parsed["complete"].get<bool>();
+                    result.hints = hints;
+                } else {
+                    result.errorMessage =
+                        "Baa returned inlay hints that do not satisfy "
+                        "inlay-hints-json-v1.";
+                    if (not process.standardError.empty()) {
+                        result.errorMessage += " " +
+                            trimmed(process.standardError);
+                    }
+                }
+            }
+
+            InlayHintCallback callback;
+            bool publish = false;
+            {
+                std::scoped_lock lock(m_mutex);
+                m_activeUri.clear();
+                m_activeVersion = 0;
+                m_activeInlayHintToken = 0;
+                const auto latest =
+                    m_latestVersions.find(inlayHintRequest.uri);
+                publish = not process.cancelled and
+                          latest != m_latestVersions.end() and
+                          latest->second == inlayHintRequest.version;
+                callback = m_inlayHintCallback;
+            }
+            if (publish and callback) callback(std::move(result));
+            m_wake.notify_one();
+            continue;
+        }
 
         if (isStructureRequest) {
             BaaStructureResult result;

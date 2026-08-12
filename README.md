@@ -31,7 +31,8 @@ The current server provides:
 - definitions, references, and collision-checked Arabic rename;
 - semantic highlighting with compiler-resolved identifier roles;
 - document formatting;
-- folding and semantic selection ranges; and
+- folding and semantic selection ranges;
+- compiler-owned Arabic parameter-name inlay hints; and
 - version checks, cancellation, stale-result rejection, and UTF-8/UTF-16 position conversion.
 
 See the [roadmap](ROADMAP.md) for delivery status and [architecture](docs/ARCHITECTURE_AR.md) for the contract and ownership model.

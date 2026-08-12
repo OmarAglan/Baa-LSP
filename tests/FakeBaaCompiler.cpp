@@ -65,6 +65,7 @@ int main(int argc, char **argv)
     bool dumpSymbols = false;
     bool dumpTokens = false;
     bool dumpStructure = false;
+    bool inlayHints = false;
     bool completionData = false;
     bool formatJson = false;
     bool semanticQuery = false;
@@ -79,6 +80,8 @@ int main(int argc, char **argv)
             dumpTokens = true;
         } else if (argument == "--dump-structure=json") {
             dumpStructure = true;
+        } else if (argument == "--inlay-hints=json") {
+            inlayHints = true;
         } else if (argument == "--completion-data=json") {
             completionData = true;
         } else if (argument == "--format=json") {
@@ -93,6 +96,43 @@ int main(int argc, char **argv)
         } else if (argument.starts_with("--source-stdin=")) {
             logicalFile = std::string(argument.substr(15));
         }
+    }
+    if (inlayHints) {
+        if (source.find("انتظر") != std::string::npos) {
+            std::ofstream(".baa-lsp-inlay-active", std::ios::binary)
+                << "active\n";
+            std::this_thread::sleep_for(std::chrono::seconds(5));
+        }
+        Json hints = Json::array();
+        const std::size_t first = source.find("١");
+        const std::size_t second = source.rfind("٢");
+        if (first != std::string::npos) {
+            hints.push_back({
+                {"position_byte", first},
+                {"kind", "parameter"},
+                {"label", "أول:"},
+                {"parameter", "أول"},
+                {"padding_right", true}
+            });
+        }
+        if (second != std::string::npos and second != first) {
+            hints.push_back({
+                {"position_byte", second},
+                {"kind", "parameter"},
+                {"label", "ثان:"},
+                {"parameter", "ثان"},
+                {"padding_right", true}
+            });
+        }
+        std::cout << Json{
+            {"schema_version", "inlay-hints-json-v1"},
+            {"compiler_version", "test"},
+            {"file", logicalFile},
+            {"position_encoding", "utf-8-bytes"},
+            {"complete", source.find("مفقود") == std::string::npos},
+            {"hints", std::move(hints)}
+        }.dump();
+        return 0;
     }
     if (dumpStructure) {
         auto location = [&source](std::size_t byte) {

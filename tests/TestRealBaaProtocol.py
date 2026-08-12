@@ -66,6 +66,7 @@ def main():
         assert initialized["result"]["capabilities"]["documentSymbolProvider"] is True
         assert initialized["result"]["capabilities"]["foldingRangeProvider"] is True
         assert initialized["result"]["capabilities"]["selectionRangeProvider"] is True
+        assert initialized["result"]["capabilities"]["inlayHintProvider"] is True
         semantic_provider = initialized["result"]["capabilities"]["semanticTokensProvider"]
         assert semantic_provider["full"] is True
         assert semantic_provider["legend"]["tokenTypes"] == [
@@ -191,6 +192,25 @@ def main():
         call_line = source.splitlines()[3]
         call_start = call_line.index("اجمع")
         local_start = call_line.index("قيمة_محلية")
+        second_argument_start = call_line.index("٢")
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 22,
+            "method": "textDocument/inlayHint",
+            "params": {
+                "textDocument": {"uri": uri},
+                "range": {
+                    "start": {"line": 3, "character": call_start},
+                    "end": {"line": 3, "character": len(call_line)},
+                },
+            },
+        })
+        hints = read_response(process, 22)["result"]
+        assert [(hint["position"], hint["label"]) for hint in hints] == [
+            ({"line": 3, "character": local_start}, "أول:"),
+            ({"line": 3, "character": second_argument_start}, "ثان:"),
+        ]
+        assert all(hint["kind"] == 2 for hint in hints)
+        assert all(hint["data"]["complete"] is True for hint in hints)
         send_message(process, {
             "jsonrpc": "2.0", "id": 18, "method": "textDocument/completion",
             "params": {

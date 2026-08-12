@@ -26,6 +26,7 @@ int main()
     CHECK(messages[0]["result"]["capabilities"]["documentSymbolProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["foldingRangeProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["selectionRangeProvider"] == true);
+    CHECK(messages[0]["result"]["capabilities"]["inlayHintProvider"] == true);
     CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]["full"] ==
           true);
     CHECK(messages[0]["result"]["capabilities"]["semanticTokensProvider"]
