@@ -70,7 +70,10 @@
   stale-result rejection, and UTF-16 conversion without source inference.
 - [x] Qalam-managed crash recovery with capped backoff, unsaved-document reopen,
   a stable-service reset window, and a three-attempt restart limit.
-- [ ] Telemetry-free structured server logs.
+- [x] Telemetry-free structured server logs through opt-in `baa-lsp-log-v1`,
+  with monotonic session sequences, sanitized bounded data, standard LSP
+  fallback, and no source, path, environment, raw subprocess output, timestamp,
+  session identifier, network transport, or `telemetry/event` payload.
 - [x] Standalone Windows/Linux install trees and versioned archives with the
   independent Python protocol client running against the installed server.
 - [x] Bundle the admitted server with Qalam on Windows/Linux and publish hosted

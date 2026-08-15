@@ -116,7 +116,11 @@ private:
     void invalidateSemanticRequests(const std::string &uri, int code,
                                     const std::string &message);
     void publishDiagnostics(const std::string &uri, int version, const Json &diagnostics);
-    void sendLogMessage(const std::string &message, int type = 1);
+    void sendLogEvent(std::string_view event,
+                      std::string_view component,
+                      const std::string &message,
+                      int type = 1,
+                      Json data = Json::object());
     void sendResult(const Json &id, const Json &result);
     void sendError(const Json &id, int code, const std::string &message);
     void sendJson(Json message);
@@ -324,6 +328,9 @@ private:
     std::unordered_map<std::string, std::filesystem::path> m_workspaceRoots;
     std::unordered_map<std::string, ProjectPlan> m_projectPlans;
     ProcessRunner m_projectRunner;
+    std::mutex m_logMutex;
+    bool m_structuredLogsEnabled{};
+    std::uint64_t m_nextLogSequence{1};
     std::mutex m_callbackMutex;
     MessageCallback m_messageCallback;
     ExitCallback m_exitCallback;

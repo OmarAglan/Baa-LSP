@@ -32,7 +32,9 @@ The current server provides:
 - semantic highlighting with compiler-resolved identifier roles;
 - document formatting;
 - folding and semantic selection ranges;
-- compiler-owned Arabic parameter-name inlay hints; and
+- compiler-owned Arabic parameter-name inlay hints;
+- opt-in, telemetry-free structured operational logs for Qalam, with standard
+  `window/logMessage` fallback for other clients; and
 - version checks, cancellation, stale-result rejection, and UTF-8/UTF-16 position conversion.
 
 See the [roadmap](ROADMAP.md) for delivery status and [architecture](docs/ARCHITECTURE_AR.md) for the contract and ownership model.

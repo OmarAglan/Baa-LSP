@@ -167,11 +167,26 @@ def main():
                 "jsonrpc": "2.0",
                 "id": 1,
                 "method": "initialize",
-                "params": {"rootUri": root.resolve().as_uri()},
+                "params": {
+                    "rootUri": root.resolve().as_uri(),
+                    "initializationOptions": {
+                        "baaStructuredLogs": {
+                            "schemaVersion": "baa-lsp-log-v1"
+                        }
+                    },
+                },
             },
         )
         initialized = read_response(process, 1)
         assert initialized["result"]["capabilities"]["workspaceSymbolProvider"] is True
+        log_capability = initialized["result"]["capabilities"]["experimental"][
+            "baaLogEvent"
+        ]
+        assert log_capability == {
+            "schemaVersion": "baa-lsp-log-v1",
+            "transport": "local-stdio",
+            "telemetry": False,
+        }
         workspace_capability = initialized["result"]["capabilities"]["workspace"]
         assert workspace_capability["workspaceFolders"]["supported"] is True
         assert workspace_capability["workspaceFolders"]["changeNotifications"] is True
@@ -494,12 +509,30 @@ def main():
         )
         reload_messages = []
         assert read_response(process, 25, reload_messages)["result"] == []
-        assert any(
-            message.get("method") == "window/logMessage"
-            and message.get("params", {}).get("type") == 2
-            and "Takween" in message.get("params", {}).get("message", "")
+        reload_events = [
+            message["params"]
             for message in reload_messages
-        ), reload_messages
+            if message.get("method") == "baa/logEvent"
+        ]
+        assert reload_events, reload_messages
+        assert all(
+            message.get("method") != "telemetry/event"
+            for message in reload_messages
+        )
+        failure = next(
+            event
+            for event in reload_events
+            if event.get("event") == "workspace.plan.failed"
+        )
+        assert failure["schema_version"] == "baa-lsp-log-v1"
+        assert failure["sequence"] > 0
+        assert failure["severity"] == "warning"
+        assert failure["component"] == "workspace"
+        assert failure["message"] == (
+            "Takween failed while loading the project plan."
+        )
+        assert isinstance(failure["data"].get("exit_code"), int)
+        assert len(failure) == 7
 
         send_message(
             process,

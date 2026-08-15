@@ -23,6 +23,17 @@ constexpr int InternalError = -32603;
 constexpr int ServerNotInitialized = -32002;
 constexpr int RequestCancelled = -32800;
 constexpr int ContentModified = -32801;
+constexpr std::string_view StructuredLogSchema = "baa-lsp-log-v1";
+
+std::string_view logSeverity(int type)
+{
+    switch (type) {
+    case 1: return "error";
+    case 2: return "warning";
+    case 3: return "info";
+    default: return "debug";
+    }
+}
 
 std::string stringValue(const Json &object, std::string_view key)
 {
@@ -714,11 +725,9 @@ bool BaaLanguageServer::addWorkspaceRoot(const std::filesystem::path &root)
     std::filesystem::path normalized;
     try {
         normalized = std::filesystem::absolute(root).lexically_normal();
-    } catch (const std::filesystem::filesystem_error &error) {
-        sendLogMessage(
-            "Workspace folder could not be normalized: " +
-                std::string(error.what()),
-            2);
+    } catch (const std::filesystem::filesystem_error &) {
+        sendLogEvent("workspace.root.invalid", "workspace",
+                     "Workspace folder could not be normalized.", 2);
         return false;
     }
     const std::string key = comparablePath(normalized);
@@ -739,7 +748,8 @@ bool BaaLanguageServer::removeWorkspaceRoot(
     m_projectPlans.erase(key);
     invalidateProjectContext(
         "Workspace folders changed before project data was ready.");
-    sendLogMessage("Removed workspace folder " + utf8FromPath(root) + ".", 3);
+    sendLogEvent("workspace.root.removed", "workspace",
+                 "A workspace folder was removed.", 3);
     return true;
 }
 
@@ -754,10 +764,10 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
     if (not std::filesystem::is_regular_file(manifest, filesystemError)) {
         const bool removed = m_projectPlans.erase(key) != 0;
         if (reportMissingManifest) {
-            sendLogMessage(
+            sendLogEvent(
+                "workspace.manifest.missing", "workspace",
                 "Takween project context was removed because مشروع.تكوين "
-                "is not present in " + utf8FromPath(root) + ".",
-                2);
+                "is not present.", 2);
         }
         if (removed) {
             invalidateProjectContext(
@@ -821,12 +831,9 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
     }
     if (not process.started) {
         const bool removed = m_projectPlans.erase(key) != 0;
-        sendLogMessage(
-            "Takween project plan is unavailable: " +
-            (process.errorMessage.empty()
-                ? std::string("the executable was not found.")
-                : process.errorMessage),
-            2);
+        sendLogEvent(
+            "workspace.plan.unavailable", "workspace",
+            "Takween is unavailable while loading the project plan.", 2);
         if (removed) {
             invalidateProjectContext(
                 "Takween project context failed to reload.");
@@ -835,12 +842,10 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
     }
     if (process.exitCode != 0) {
         const bool removed = m_projectPlans.erase(key) != 0;
-        std::string message =
-            "Takween project plan failed with exit code " +
-            std::to_string(process.exitCode) + ".";
-        if (not process.standardError.empty())
-            message += " " + process.standardError;
-        sendLogMessage(message, 2);
+        sendLogEvent(
+            "workspace.plan.failed", "workspace",
+            "Takween failed while loading the project plan.", 2,
+            {{"exit_code", process.exitCode}});
         if (removed) {
             invalidateProjectContext(
                 "Takween project context failed to reload.");
@@ -854,7 +859,8 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
         not plan.value("source_files", Json::array()).is_array() or
         not plan.value("include_paths", Json::array()).is_array()) {
         const bool removed = m_projectPlans.erase(key) != 0;
-        sendLogMessage(
+        sendLogEvent(
+            "workspace.plan.invalid", "workspace",
             "Takween returned a project plan that does not satisfy "
             "takween-build-plan-v1.", 2);
         if (removed) {
@@ -894,10 +900,10 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
     loaded.loaded = not loaded.sourceFiles.empty();
     if (not loaded.loaded) {
         const bool removed = m_projectPlans.erase(key) != 0;
-        sendLogMessage(
-            "Takween returned a project plan without Baa translation units for " +
-                utf8FromPath(root) + ".",
-            2);
+        sendLogEvent(
+            "workspace.plan.empty", "workspace",
+            "Takween returned a project plan without Baa translation units.",
+            2, {{"source_count", 0}});
         if (removed) {
             invalidateProjectContext(
                 "Takween project context failed to reload.");
@@ -909,10 +915,10 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
     invalidateProjectContext(
         "Takween project context changed before semantic data was ready.");
     if (m_projectPlans.at(key).loaded) {
-        sendLogMessage(
-            "Loaded Takween project plan with " +
-            std::to_string(sourceCount) +
-            " Baa translation units from " + utf8FromPath(root) + ".", 3);
+        sendLogEvent(
+            "workspace.plan.loaded", "workspace",
+            "Loaded the Takween project plan.", 3,
+            {{"source_count", sourceCount}});
     }
     return true;
 }
@@ -994,6 +1000,17 @@ void BaaLanguageServer::handleRequest(const Json &message)
             sendError(id, InvalidRequest, "Language server is already initialized.");
             return;
         }
+        const Json initializationOptions = objectValue(
+            initializeParams, "initializationOptions");
+        const Json structuredLogs = objectValue(
+            initializationOptions, "baaStructuredLogs");
+        {
+            std::scoped_lock lock(m_logMutex);
+            m_structuredLogsEnabled =
+                stringValue(structuredLogs, "schemaVersion") ==
+                StructuredLogSchema;
+            m_nextLogSequence = 1;
+        }
         m_initializeResponded = true;
         sendResult(id, {
             {"capabilities", {
@@ -1051,6 +1068,13 @@ void BaaLanguageServer::handleRequest(const Json &message)
                 {"completionProvider", {
                     {"resolveProvider", true},
                     {"triggerCharacters", completionTriggerCharacters()}
+                }},
+                {"experimental", {
+                    {"baaLogEvent", {
+                        {"schemaVersion", std::string(StructuredLogSchema)},
+                        {"transport", "local-stdio"},
+                        {"telemetry", false}
+                    }}
                 }}
             }},
             {"serverInfo", {{"name", "Baa-LSP"}, {"version", "0.1.0"}}}
@@ -1262,7 +1286,8 @@ void BaaLanguageServer::handleDidOpen(const Json &params)
     {
         std::scoped_lock lock(m_documentsMutex);
         if (not m_documents.open(document, &error)) {
-            sendLogMessage(error);
+            sendLogEvent("document.open.rejected", "document",
+                         "A Baa document was rejected while opening.");
             return;
         }
     }
@@ -1313,7 +1338,8 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     if (changes == params.end() or not changes->is_array() or changes->empty() or
         not changes->front().is_object() or not changes->front().contains("text") or
         not changes->front()["text"].is_string()) {
-        sendLogMessage("Document change does not contain valid full text.");
+        sendLogEvent("document.change.invalid", "document",
+                     "Document change does not contain valid full text.");
         return;
     }
 
@@ -1323,7 +1349,8 @@ void BaaLanguageServer::handleDidChange(const Json &params)
         std::scoped_lock lock(m_documentsMutex);
         if (not m_documents.change(uri, version, changes->front()["text"].get<std::string>(),
                                    &error)) {
-            sendLogMessage(error, 2);
+            sendLogEvent("document.change.rejected", "document",
+                         "A Baa document change was rejected.", 2);
             return;
         }
         document = m_documents.document(uri);
@@ -2548,7 +2575,8 @@ void BaaLanguageServer::analyze(const BaaDocument &document)
 {
     const std::string path = localPathForUri(document.uri);
     if (path.empty()) {
-        sendLogMessage("This Baa-LSP version supports local file:// documents only.");
+        sendLogEvent("document.uri.unsupported", "document",
+                     "This Baa-LSP version supports local file:// documents only.");
         return;
     }
     m_compiler.schedule({document.uri, path, document.text, document.version});
@@ -2564,7 +2592,8 @@ void BaaLanguageServer::onAnalysisFinished(BaaAnalysisResult result)
         document = m_documents.document(result.uri);
     }
     if (not result.errorMessage.empty()) {
-        sendLogMessage(result.errorMessage);
+        sendLogEvent("compiler.analysis.failed", "compiler",
+                     "Baa compiler analysis failed.");
         return;
     }
     publishDiagnostics(result.uri, result.version,
@@ -2656,10 +2685,9 @@ void BaaLanguageServer::onSymbolsFinished(BaaSymbolResult result)
                         result.errorMessage
                     });
             }
-            sendLogMessage(
-                "Workspace symbols skipped one Baa source: " +
-                result.errorMessage,
-                2);
+            sendLogEvent(
+                "workspace.symbol.source-skipped", "workspace",
+                "Workspace symbols skipped one Baa source.", 2);
             resolveWorkspaceSymbolRequests();
         }
         return;
@@ -2929,7 +2957,8 @@ void BaaLanguageServer::onCompletionDataFinished(BaaCompletionDataResult result)
         pending.swap(m_pendingCompletionRequests);
     }
     if (not failure.empty()) {
-        sendLogMessage(failure);
+        sendLogEvent("compiler.completion-data.failed", "compiler",
+                     "Baa compiler completion data could not be loaded.");
         for (const PendingCompletionRequest &request : pending) {
             sendError(request.id, InternalError, failure);
         }
@@ -3240,8 +3269,13 @@ void BaaLanguageServer::onSemanticFinished(BaaSemanticResult result)
             sendError(reply.id, InternalError, result.errorMessage);
         return;
     }
-    for (const std::string &warning : result.warnings)
-        sendLogMessage(warning, 2);
+    for (const std::string &warning : result.warnings) {
+        (void)warning;
+        sendLogEvent(
+            "compiler.semantic.warning", "compiler",
+            "Baa compiler reported a warning while serving a semantic request.",
+            2);
+    }
 
     CachedSemanticQuery completed;
     completed.version = pending.version;
@@ -3512,8 +3546,29 @@ void BaaLanguageServer::publishDiagnostics(const std::string &uri,
               {"params", std::move(params)}});
 }
 
-void BaaLanguageServer::sendLogMessage(const std::string &message, int type)
+void BaaLanguageServer::sendLogEvent(std::string_view event,
+                                     std::string_view component,
+                                     const std::string &message,
+                                     int type,
+                                     Json data)
 {
+    std::scoped_lock lock(m_logMutex);
+    if (m_structuredLogsEnabled) {
+        sendJson({
+            {"jsonrpc", "2.0"},
+            {"method", "baa/logEvent"},
+            {"params", {
+                {"schema_version", std::string(StructuredLogSchema)},
+                {"sequence", m_nextLogSequence++},
+                {"severity", std::string(logSeverity(type))},
+                {"component", std::string(component)},
+                {"event", std::string(event)},
+                {"message", message},
+                {"data", data.is_object() ? std::move(data) : Json::object()}
+            }}
+        });
+        return;
+    }
     sendJson({{"jsonrpc", "2.0"}, {"method", "window/logMessage"},
               {"params", {{"type", type}, {"message", message}}}});
 }
