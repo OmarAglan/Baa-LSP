@@ -1533,6 +1533,10 @@ void BaaCompilerBridge::workerLoop()
                 result.errorMessage = process.errorMessage.empty()
                     ? "Baa compiler executable was not found."
                     : process.errorMessage;
+            } else if (not process.cancelled and process.exitCode == 1) {
+                // An incomplete editor buffer has no stable outline. This is
+                // an ordinary source result, not a symbols-json failure.
+                result.symbols = Json::array();
             } else if (not process.cancelled) {
                 const Json parsed = Json::parse(process.standardOutput, nullptr, false);
                 if (not parsed.is_discarded() and parsed.is_object() and

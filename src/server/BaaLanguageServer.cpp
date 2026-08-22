@@ -419,11 +419,24 @@ std::size_t completionPrefixStart(std::string_view text, std::size_t cursor)
 Json completionTriggerCharacters()
 {
     return Json::array({
-        "#", "_", "ا", "أ", "إ", "آ", "ب", "ت", "ث", "ج", "ح", "خ",
+        "#", "_", "\"", "/", "\\", "ا", "أ", "إ", "آ", "ب", "ت", "ث", "ج", "ح", "خ",
         "د", "ذ", "ر", "ز", "س", "ش", "ص", "ض", "ط", "ظ", "ع", "غ",
         "ف", "ق", "ك", "ل", "م", "ن", "ه", "و", "ي", "ى", "ة", "ؤ",
         "ئ", "ء"
     });
+}
+
+bool isBaaImplementationPath(const std::filesystem::path &path)
+{
+    const std::filesystem::path extension = path.extension();
+    return extension == pathFromUtf8(".باء") or extension == ".baa";
+}
+
+bool isBaaDocumentPath(const std::filesystem::path &path)
+{
+    const std::filesystem::path extension = path.extension();
+    return isBaaImplementationPath(path) or
+           extension == pathFromUtf8(".رأسباء") or extension == ".baahd";
 }
 
 int metadataCompletionKind(std::string_view kind)
@@ -561,6 +574,83 @@ Json buildCompletionItems(std::string_view text,
         }
     }
     return result;
+}
+
+bool isIncludeCandidate(const std::filesystem::directory_entry &entry)
+{
+    std::error_code error;
+    if (entry.is_directory(error)) return not error;
+    return not error and entry.is_regular_file(error) and not error and
+           isBaaDocumentPath(entry.path());
+}
+
+std::optional<Json> buildIncludePathCompletion(
+    std::string_view text,
+    std::size_t cursor,
+    const std::vector<std::filesystem::path> &searchRoots)
+{
+    cursor = std::min(cursor, text.size());
+    const std::size_t lineStart = cursor == 0 ? 0 : text.rfind('\n', cursor - 1) + 1;
+    std::string_view line = text.substr(lineStart, cursor - lineStart);
+    std::size_t offset = 0;
+    while (offset < line.size() and (line[offset] == ' ' or line[offset] == '\t'))
+        ++offset;
+    constexpr std::string_view Directive = "#تضمين";
+    if (not line.substr(offset).starts_with(Directive)) return std::nullopt;
+    offset += Directive.size();
+    while (offset < line.size() and (line[offset] == ' ' or line[offset] == '\t'))
+        ++offset;
+    if (offset >= line.size() or line[offset] != '"') return std::nullopt;
+    ++offset;
+    if (line.substr(offset).find('"') != std::string_view::npos) return std::nullopt;
+
+    const std::string typed(line.substr(offset));
+    const std::size_t separator = typed.find_last_of("/\\");
+    const std::string directoryPrefix = separator == std::string::npos
+        ? std::string{} : typed.substr(0, separator + 1);
+    const std::string leafPrefix = separator == std::string::npos
+        ? typed : typed.substr(separator + 1);
+    const std::size_t replacementStart = lineStart + offset +
+        (separator == std::string::npos ? 0 : separator + 1);
+    const Json replacementRange{
+        {"start", PositionEncoding::utf16PositionForByteOffset(text, replacementStart)},
+        {"end", PositionEncoding::utf16PositionForByteOffset(text, cursor)}
+    };
+
+    Json items = Json::array();
+    std::unordered_set<std::string> seen;
+    for (const std::filesystem::path &root : searchRoots) {
+        std::filesystem::path directory = root;
+        if (not directoryPrefix.empty())
+            directory /= pathFromUtf8(directoryPrefix);
+        std::error_code error;
+        if (not std::filesystem::is_directory(directory, error) or error) continue;
+        std::filesystem::directory_iterator iterator(directory, error);
+        const std::filesystem::directory_iterator end;
+        for (; not error and iterator != end; iterator.increment(error)) {
+            if (not isIncludeCandidate(*iterator)) continue;
+            const std::string name = utf8FromPath(iterator->path().filename());
+            if (not leafPrefix.empty() and not name.starts_with(leafPrefix)) continue;
+            std::error_code typeError;
+            const bool directoryEntry = iterator->is_directory(typeError) and not typeError;
+            const std::string insertion = name + (directoryEntry ? "/" : "");
+            if (not seen.insert(insertion).second) continue;
+            items.push_back({
+                {"label", insertion},
+                {"kind", directoryEntry ? 19 : 17},
+                {"detail", directoryEntry ? "مجلد تضمين" : "ملف باء"},
+                {"filterText", name},
+                {"insertTextFormat", 1},
+                {"sortText", std::string(directoryEntry ? "0" : "1") + name},
+                {"textEdit", {{"range", replacementRange}, {"newText", insertion}}},
+                {"data", {{"source", "baa-lsp-include"}}}
+            });
+        }
+    }
+    std::sort(items.begin(), items.end(), [](const Json &left, const Json &right) {
+        return left.value("sortText", "") < right.value("sortText", "");
+    });
+    return items;
 }
 
 void appendWorkspaceSymbols(Json &output,
@@ -885,7 +975,7 @@ bool BaaLanguageServer::loadProjectPlan(const std::filesystem::path &root,
         std::filesystem::path path = pathFromUtf8(source.get<std::string>());
         if (path.is_relative()) path = workingDirectory / path;
         path = std::filesystem::absolute(path).lexically_normal();
-        if (path.extension() != ".baa") continue;
+        if (not isBaaImplementationPath(path)) continue;
         const std::string comparable = comparablePath(path);
         if (not comparable.empty() and seenSources.insert(comparable).second)
             loaded.sourceFiles.push_back(std::move(path));
@@ -1840,7 +1930,7 @@ void BaaLanguageServer::handleWorkspaceSymbol(const Json &id,
         const std::string pathText = localPathForUri(document.uri);
         if (pathText.empty()) continue;
         const std::filesystem::path path = pathFromUtf8(pathText);
-        if (path.extension() != ".baa" and path.extension() != ".baahd")
+        if (not isBaaDocumentPath(path))
             continue;
         if (seenUris.insert(document.uri).second) {
             sources.push_back({
@@ -1983,6 +2073,33 @@ void BaaLanguageServer::handleCompletion(const Json &id, const Json &params)
     const int character = position["character"].get<int>();
     if (line < 0 or character < 0) {
         sendError(id, InvalidParams, "Completion position cannot be negative.");
+        return;
+    }
+
+    BaaDocument completionDocument;
+    {
+        std::scoped_lock lock(m_documentsMutex);
+        completionDocument = m_documents.document(uri);
+    }
+    const std::string documentPathText = localPathForUri(uri);
+    const std::filesystem::path documentPath = pathFromUtf8(documentPathText);
+    std::vector<std::filesystem::path> includeRoots;
+    includeRoots.push_back(documentPath.parent_path());
+    if (const ProjectPlan *plan = projectPlanForPath(documentPath)) {
+        includeRoots.push_back(plan->workingDirectory);
+        for (const std::string &path : plan->includePaths)
+            includeRoots.push_back(pathFromUtf8(path));
+    }
+    if (const char *stdlib = std::getenv("BAA_STDLIB"); stdlib and *stdlib)
+        includeRoots.push_back(pathFromUtf8(stdlib));
+    if (const char *home = std::getenv("BAA_HOME"); home and *home)
+        includeRoots.push_back(pathFromUtf8(home) / "stdlib");
+    const std::size_t cursor =
+        PositionEncoding::utf8ByteOffsetForUtf16Position(
+            completionDocument.text, line, character);
+    if (const std::optional<Json> includeItems = buildIncludePathCompletion(
+            completionDocument.text, cursor, includeRoots)) {
+        sendResult(id, {{"isIncomplete", false}, {"items", *includeItems}});
         return;
     }
 

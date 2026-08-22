@@ -27,6 +27,7 @@ The current server provides:
 
 - live diagnostics and safe compiler-provided quick fixes;
 - Arabic-first completion, hover, and signature help;
+- filesystem completion for folders and Baa files inside `#تضمين` strings;
 - document and workspace symbols;
 - definitions, references, and collision-checked Arabic rename;
 - semantic highlighting with compiler-resolved identifier roles;
@@ -89,6 +90,9 @@ baa-lsp --baa-path <path-to-baa> --takween-path <path-to-takween>
 ```
 
 If `--baa-path` is omitted, the server also checks the `BAA` environment variable and then `PATH`. LSP messages use `Content-Length` framing over standard input and output, so ordinary log text must never be written to stdout.
+
+The canonical document extensions are `.باء` for source and `.رأسباء` for
+headers. `.baa` and `.baahd` remain accepted for existing projects.
 
 ## Documentation
 

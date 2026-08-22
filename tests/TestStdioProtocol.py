@@ -42,7 +42,15 @@ def main():
     server_path = pathlib.Path(sys.argv[1]).resolve()
     compiler_path = pathlib.Path(sys.argv[2]).resolve()
     with tempfile.TemporaryDirectory(prefix="baa-lsp-مسار-") as directory:
-        source_path = pathlib.Path(directory, "رئيسي.baa")
+        source_path = pathlib.Path(directory, "رئيسي.باء")
+        include_directory = pathlib.Path(directory, "واجهات")
+        include_directory.mkdir()
+        pathlib.Path(include_directory, "حساب.رأسباء").write_text(
+            "خارجي صحيح اجمع(صحيح أ، صحيح ب).\n", encoding="utf-8")
+        pathlib.Path(include_directory, "قديم.baahd").write_text(
+            "خارجي صحيح قديم().\n", encoding="utf-8")
+        pathlib.Path(include_directory, "ليس_مصدر.txt").write_text(
+            "ignored\n", encoding="utf-8")
         uri = source_path.as_uri()
         process = subprocess.Popen(
             [str(server_path), "--baa-path", str(compiler_path)],
@@ -91,6 +99,7 @@ def main():
         triggers = completion_provider["triggerCharacters"]
         assert "ا" in triggers
         assert "#" in triggers
+        assert "/" in triggers
 
         send_message(process, {"jsonrpc": "2.0", "method": "initialized", "params": {}})
         send_message(process, {
@@ -577,6 +586,64 @@ def main():
         })
         stale_inlay = read_response(process, 31)
         assert stale_inlay["error"]["code"] == -32801
+
+        include_source = '#تضمين "واج'
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 7},
+                "contentChanges": [{"text": include_source}],
+            },
+        })
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 70,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": len(include_source)},
+            },
+        })
+        directory_completion = read_response(process, 70)["result"]
+        assert directory_completion["isIncomplete"] is False
+        assert directory_completion["items"] == [{
+            "label": "واجهات/",
+            "kind": 19,
+            "detail": "مجلد تضمين",
+            "filterText": "واجهات",
+            "insertTextFormat": 1,
+            "sortText": "0واجهات",
+            "textEdit": {
+                "range": {
+                    "start": {"line": 0, "character": len('#تضمين "')},
+                    "end": {"line": 0, "character": len(include_source)},
+                },
+                "newText": "واجهات/",
+            },
+            "data": {"source": "baa-lsp-include"},
+        }]
+
+        nested_source = '#تضمين "واجهات/'
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 8},
+                "contentChanges": [{"text": nested_source}],
+            },
+        })
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 71,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": len(nested_source)},
+            },
+        })
+        file_items = read_response(process, 71)["result"]["items"]
+        assert [item["label"] for item in file_items] == [
+            "حساب.رأسباء", "قديم.baahd",
+        ]
+        assert all(item["kind"] == 17 for item in file_items)
+        assert all(item["data"]["source"] == "baa-lsp-include" for item in file_items)
 
         send_message(process, {"jsonrpc": "2.0", "id": 4, "method": "shutdown", "params": None})
         assert read_response(process, 4)["id"] == 4
