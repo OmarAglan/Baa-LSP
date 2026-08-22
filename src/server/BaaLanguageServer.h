@@ -322,6 +322,7 @@ private:
     const ProjectPlan *projectPlanForPath(
         const std::filesystem::path &path) const;
     bool hasLoadedProjectPlan() const;
+    std::filesystem::path m_compilerProgram;
     std::string m_takweenProgram;
     std::filesystem::path m_applicationDirectory;
     Json m_initializationOptions = Json::object();

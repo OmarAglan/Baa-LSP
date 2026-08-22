@@ -587,11 +587,37 @@ def main():
         stale_inlay = read_response(process, 31)
         assert stale_inlay["error"]["code"] == -32801
 
-        include_source = '#تضمين "واج'
+        # Qalam inserts both quotes and leaves the caret between them. The
+        # closing quote after the caret must not turn this into normal language
+        # completion.
+        paired_include_source = '#تضمين ""'
         send_message(process, {
             "jsonrpc": "2.0", "method": "textDocument/didChange",
             "params": {
                 "textDocument": {"uri": uri, "version": 7},
+                "contentChanges": [{"text": paired_include_source}],
+            },
+        })
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 69,
+            "method": "textDocument/completion",
+            "params": {
+                "textDocument": {"uri": uri},
+                "position": {"line": 0, "character": len('#تضمين "')},
+            },
+        })
+        paired_items = read_response(process, 69)["result"]["items"]
+        assert any(item["label"] == "واجهات/" and item["kind"] == 19
+                   for item in paired_items)
+        assert all(item["kind"] in {17, 19} for item in paired_items)
+        assert all(item["data"]["source"] == "baa-lsp-include"
+                   for item in paired_items)
+
+        include_source = '#تضمين "واج'
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 8},
                 "contentChanges": [{"text": include_source}],
             },
         })
@@ -608,7 +634,7 @@ def main():
         assert directory_completion["items"] == [{
             "label": "واجهات/",
             "kind": 19,
-            "detail": "مجلد تضمين",
+            "detail": "افتح المجلد لعرض ملفات التضمين",
             "filterText": "واجهات",
             "insertTextFormat": 1,
             "sortText": "0واجهات",
@@ -626,7 +652,7 @@ def main():
         send_message(process, {
             "jsonrpc": "2.0", "method": "textDocument/didChange",
             "params": {
-                "textDocument": {"uri": uri, "version": 8},
+                "textDocument": {"uri": uri, "version": 9},
                 "contentChanges": [{"text": nested_source}],
             },
         })

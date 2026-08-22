@@ -638,7 +638,9 @@ std::optional<Json> buildIncludePathCompletion(
             items.push_back({
                 {"label", insertion},
                 {"kind", directoryEntry ? 19 : 17},
-                {"detail", directoryEntry ? "مجلد تضمين" : "ملف باء"},
+                {"detail", directoryEntry
+                    ? "افتح المجلد لعرض ملفات التضمين"
+                    : "ملف يمكن تضمينه في المصدر"},
                 {"filterText", name},
                 {"insertTextFormat", 1},
                 {"sortText", std::string(directoryEntry ? "0" : "1") + name},
@@ -750,6 +752,9 @@ BaaLanguageServer::~BaaLanguageServer()
 
 void BaaLanguageServer::setCompilerProgram(std::string program)
 {
+    m_compilerProgram = program.empty()
+        ? std::filesystem::path{}
+        : pathFromUtf8(program);
     m_compiler.setCompilerProgram(std::move(program));
 }
 
@@ -2094,6 +2099,14 @@ void BaaLanguageServer::handleCompletion(const Json &id, const Json &params)
         includeRoots.push_back(pathFromUtf8(stdlib));
     if (const char *home = std::getenv("BAA_HOME"); home and *home)
         includeRoots.push_back(pathFromUtf8(home) / "stdlib");
+    // Qalam passes the resolved Baa executable explicitly. Discovering the
+    // sibling stdlib from that path keeps completion reliable even when Qalam
+    // was already running before an installer broadcast new environment
+    // variables to Windows applications.
+    if (not m_compilerProgram.empty() and
+        not m_compilerProgram.parent_path().empty()) {
+        includeRoots.push_back(m_compilerProgram.parent_path() / "stdlib");
+    }
     const std::size_t cursor =
         PositionEncoding::utf8ByteOffsetForUtf16Position(
             completionDocument.text, line, character);
