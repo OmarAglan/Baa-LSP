@@ -435,6 +435,27 @@ def main():
             "newText": "صحيح الرئيسية() {\n    إرجع ٠.\n}\n",
         }]
 
+        unterminated_string_source = (
+            "صحيح الرئيسية() {\n"
+            '    اطبع """\n'
+            "    إرجع ٠.\n"
+            "}\n"
+        )
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 5},
+                "contentChanges": [{"text": unterminated_string_source}],
+            },
+        })
+        lexical_diagnostics = read_message(process)
+        assert lexical_diagnostics["method"] == "textDocument/publishDiagnostics"
+        assert lexical_diagnostics["params"]["version"] == 5
+        assert len(lexical_diagnostics["params"]["diagnostics"]) == 1
+        lexical_diagnostic = lexical_diagnostics["params"]["diagnostics"][0]
+        assert lexical_diagnostic["code"] == "B0001"
+        assert "النص غير مُغلق" in lexical_diagnostic["message"]
+
         send_message(process, {
             "jsonrpc": "2.0", "id": 3, "method": "shutdown", "params": None,
         })
