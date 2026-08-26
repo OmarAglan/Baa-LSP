@@ -53,6 +53,9 @@ add_executable(baa-lsp
     src/transport/StdioTransport.cpp
     src/transport/StdioTransport.h
 )
+if(WIN32)
+    target_sources(baa-lsp PRIVATE assets/branding/baa-lsp.rc)
+endif()
 target_link_libraries(baa-lsp PRIVATE baa_lsp_core)
 baa_lsp_harden_windows_runtime(baa-lsp)
 
