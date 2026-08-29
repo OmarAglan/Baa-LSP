@@ -290,6 +290,7 @@ private:
         Json signatureHelp = nullptr;
         Json definition = nullptr;
         Json references = Json::array();
+        Json completionContext = Json::object();
         Json completionItems = Json::array();
         bool completionComplete{};
         Json symbol = nullptr;

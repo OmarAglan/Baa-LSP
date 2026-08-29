@@ -23,6 +23,9 @@
   - [x] Add compiler-owned visible locals, parameters, included declarations,
     builtin signatures, lexical shadowing, and `completionItem/resolve`
     documentation without adding a parser or semantic table to Baa-LSP.
+  - [x] Preserve compiler-owned completion context, kind ranking, expected
+    call-argument type relevance, and deterministic prefix/word-boundary/
+    substring matching for Qalam without copying Baa grammar into the server.
 - [x] Implement compiler-backed hover and signature help with UTF-16 ranges,
   active parameters, cancellation, version checks, and incomplete-call coverage.
 - [x] Add cached `workspace/symbol` indexing from Takween's source closure and

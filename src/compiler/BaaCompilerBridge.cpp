@@ -58,6 +58,70 @@ bool stringFieldEquals(const Json &object,
            field->get_ref<const std::string &>() == expected;
 }
 
+bool validCompletionKind(std::string_view kind)
+{
+    return kind == "keyword" or kind == "type" or kind == "value" or
+           kind == "directive" or kind == "snippet" or kind == "function" or
+           kind == "variable" or kind == "parameter" or kind == "array" or
+           kind == "constant" or kind == "type-alias" or kind == "enum" or
+           kind == "struct" or kind == "union";
+}
+
+bool validCompletionItem(const Json &item, bool requireScope)
+{
+    if (not item.is_object()) return false;
+    for (const std::string_view field : {
+             "label", "kind", "detail", "documentation", "filter_text",
+             "insert_text", "insert_text_format"}) {
+        const auto value = item.find(std::string(field));
+        if (value == item.end() or not value->is_string()) return false;
+    }
+    if (not validCompletionKind(item["kind"].get_ref<const std::string &>()))
+        return false;
+    const std::string &format =
+        item["insert_text_format"].get_ref<const std::string &>();
+    if (format != "plain" and format != "snippet") return false;
+    if (not nonnegativeSize(item.value("relevance", Json(nullptr)), nullptr))
+        return false;
+    if (not requireScope) return true;
+    const auto scope = item.find("scope");
+    if (scope == item.end() or not scope->is_string()) return false;
+    const std::string &scopeValue = scope->get_ref<const std::string &>();
+    return scopeValue == "local" or scopeValue == "parameter" or
+           scopeValue == "global" or scopeValue == "included";
+}
+
+bool validCompletionItems(const Json &items, bool requireScope)
+{
+    if (not items.is_array()) return false;
+    return std::ranges::all_of(items, [requireScope](const Json &item) {
+        return validCompletionItem(item, requireScope);
+    });
+}
+
+bool validCompletionContext(const Json &context)
+{
+    if (not context.is_object()) return false;
+    const std::string kind = context.value("kind", "");
+    if (kind != "top-level" and kind != "statement" and
+        kind != "call-argument")
+        return false;
+    const Json ranking = context.value("ranking", Json(nullptr));
+    if (not ranking.is_array() or ranking.empty() or
+        not std::ranges::all_of(ranking, [](const Json &value) {
+            return value.is_string() and
+                   validCompletionKind(value.get_ref<const std::string &>());
+        }))
+        return false;
+    if (context.contains("expected_type") and
+        not context["expected_type"].is_string())
+        return false;
+    if (kind != "call-argument") return true;
+    return context.value("call_name", Json(nullptr)).is_string() and
+           nonnegativeSize(
+               context.value("active_parameter", Json(nullptr)), nullptr);
+}
+
 bool validTokenKind(std::string_view kind)
 {
     return kind == "type" or kind == "modifier" or kind == "keyword" or
@@ -920,7 +984,8 @@ void BaaCompilerBridge::workerLoop()
                 if (not parsed.is_discarded() and parsed.is_object() and
                     parsed.value("schema_version", "") == "completion-data-json-v1" and
                     parsed.value("language", "") == "baa" and
-                    parsed.value("items", Json::array()).is_array()) {
+                    validCompletionItems(
+                        parsed.value("items", Json(nullptr)), false)) {
                     result.items = parsed["items"];
                 } else {
                     result.errorMessage =
@@ -1362,6 +1427,7 @@ void BaaCompilerBridge::workerLoop()
                 result.signatureHelp = nullptr;
                 result.definition = nullptr;
                 result.references = Json::array();
+                result.completionContext = Json::object();
                 result.completionItems = Json::array();
                 result.completionComplete = false;
             } else if (not process.cancelled) {
@@ -1379,12 +1445,18 @@ void BaaCompilerBridge::workerLoop()
                     parsed["references"].is_array() and
                     parsed.contains("completion") and
                     parsed["completion"].is_object() and
+                    parsed["completion"].contains("context") and
+                    validCompletionContext(
+                        parsed["completion"]["context"]) and
                     parsed["completion"].contains("items") and
-                    parsed["completion"]["items"].is_array()) {
+                    validCompletionItems(
+                        parsed["completion"]["items"], true)) {
                     result.hover = parsed["hover"];
                     result.signatureHelp = parsed["signature_help"];
                     result.definition = parsed["definition"];
                     result.references = parsed["references"];
+                    result.completionContext =
+                        parsed["completion"].value("context", Json::object());
                     result.completionItems =
                         parsed["completion"]["items"];
                     result.completionComplete = true;

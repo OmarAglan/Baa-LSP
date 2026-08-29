@@ -240,15 +240,19 @@ int main(int argc, char **argv)
             {{"label", "صحيح"}, {"kind", "type"}, {"detail", "نوع عدد صحيح"},
              {"documentation", "النوع الصحيح الافتراضي في باء."},
              {"filter_text", "صحيح"}, {"insert_text", "صحيح"},
-             {"insert_text_format", "plain"}},
+             {"insert_text_format", "plain"}, {"relevance", 40}},
             {{"label", "الرئيسية (دالة)"}, {"kind", "snippet"},
-             {"detail", "قالب نقطة بداية البرنامج"}, {"filter_text", "الرئيسية"},
+             {"detail", "قالب نقطة بداية البرنامج"},
+             {"documentation", "قالب نقطة البداية القياسي في باء."},
+             {"filter_text", "الرئيسية"},
              {"insert_text", "صحيح الرئيسية() {\n\t${0}\n\tإرجع ٠.\n}"},
-             {"insert_text_format", "snippet"}},
+             {"insert_text_format", "snippet"}, {"relevance", 20}},
             {{"label", "#تضمين"}, {"kind", "directive"},
-             {"detail", "تضمين ملف ترويسة"}, {"filter_text", "#تضمين"},
+             {"detail", "تضمين ملف ترويسة"},
+             {"documentation", "تضمين واجهة باء عربية."},
+             {"filter_text", "#تضمين"},
              {"insert_text", "#تضمين \"${1:ملف.baahd}\""},
-             {"insert_text_format", "snippet"}},
+             {"insert_text_format", "snippet"}, {"relevance", 20}},
         });
         std::cout << Json{{"schema_version", "completion-data-json-v1"},
                           {"compiler_version", "test"}, {"language", "baa"},
@@ -271,7 +275,8 @@ int main(int argc, char **argv)
                 {"filter_text", "الرئيسية"},
                 {"insert_text", "الرئيسية"},
                 {"insert_text_format", "plain"},
-                {"scope", "global"}
+                {"scope", "global"},
+                {"relevance", 29}
             },
             {
                 {"label", "قيمة_محلية"},
@@ -281,7 +286,8 @@ int main(int argc, char **argv)
                 {"filter_text", "قيمة_محلية"},
                 {"insert_text", "قيمة_محلية"},
                 {"insert_text_format", "plain"},
-                {"scope", "local"}
+                {"scope", "local"},
+                {"relevance", 9}
             },
             {
                 {"label", "من_واجهة"},
@@ -291,7 +297,8 @@ int main(int argc, char **argv)
                 {"filter_text", "من_واجهة"},
                 {"insert_text", "من_واجهة"},
                 {"insert_text_format", "plain"},
-                {"scope", "included"}
+                {"scope", "included"},
+                {"relevance", 30}
             }
         });
         Json symbol = nullptr;
@@ -358,7 +365,19 @@ int main(int argc, char **argv)
             {"signature_help", signature},
             {"definition", definition},
             {"references", references},
-            {"completion", {{"items", completionItems}}}
+            {"completion", {
+                {"context", {
+                    {"kind", "call-argument"},
+                    {"ranking", Json::array({
+                        "variable", "parameter", "array", "value",
+                        "function", "keyword", "snippet", "type"
+                    })},
+                    {"call_name", "اجمع"},
+                    {"active_parameter", 1},
+                    {"expected_type", "صحيح"}
+                }},
+                {"items", completionItems}
+            }}
         }.dump();
         return 0;
     }

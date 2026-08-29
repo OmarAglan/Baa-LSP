@@ -294,6 +294,14 @@ def main():
         assert main_items[0]["kind"] == 3
         assert main_items[0]["detail"] == "صحيح الرئيسية()"
         assert main_items[0]["data"]["source"] == "baa-compiler"
+        assert main_items[0]["data"]["baaContext"] == "call-argument"
+        assert main_items[0]["data"]["baaCall"] == "اجمع"
+        assert main_items[0]["data"]["baaStableKey"] == (
+            "function:الرئيسية"
+        )
+        assert len(main_items[0]["sortText"]) == 8
+        assert main_items[0]["sortText"].isascii()
+        assert main_items[0]["sortText"].isdigit()
         assert main_items[0]["textEdit"] == {
             "range": {
                 "start": {"line": 0, "character": 5},

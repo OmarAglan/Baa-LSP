@@ -236,6 +236,10 @@ def main():
             },
         }
         assert local_items[0]["data"]["source"] == "baa-compiler"
+        assert local_items[0]["data"]["baaContext"] == "call-argument"
+        assert local_items[0]["data"]["baaCall"] == "اجمع"
+        assert len(local_items[0]["sortText"]) == 8
+        assert local_items[0]["sortText"].isdigit()
         send_message(process, {
             "jsonrpc": "2.0", "id": 5, "method": "textDocument/hover",
             "params": {

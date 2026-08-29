@@ -484,14 +484,71 @@ std::string completionSymbolDetail(const Json &symbol)
     return completionTypeDisplay(symbol, "type");
 }
 
-bool completionMatches(std::string_view candidate, std::string_view prefix)
+int completionMatchTier(std::string_view candidate, std::string_view prefix)
 {
-    return prefix.empty() or candidate.starts_with(prefix);
+    if (prefix.empty() or candidate.starts_with(prefix)) return 0;
+    std::size_t found = candidate.find(prefix);
+    while (found != std::string_view::npos) {
+        if (found > 0) {
+            const unsigned char previous =
+                static_cast<unsigned char>(candidate[found - 1]);
+            if (previous == '_' or previous == '-' or previous == ' ' or
+                previous == '/' or previous == '\\' or previous == '#')
+                return 1;
+        }
+        found = candidate.find(prefix, found + 1);
+    }
+    return candidate.find(prefix) != std::string_view::npos ? 2 : -1;
+}
+
+int completionKindRank(const Json &context, std::string_view kind)
+{
+    const Json ranking = context.value("ranking", Json::array());
+    if (ranking.is_array() and not ranking.empty()) {
+        int index = 0;
+        for (const Json &value : ranking) {
+            if (value.is_string() and value.get<std::string>() == kind)
+                return index;
+            ++index;
+        }
+        return index + 1;
+    }
+    return 50;
+}
+
+std::string completionSortText(int matchTier,
+                               int kindRank,
+                               int relevance)
+{
+    char prefix[32]{};
+    std::snprintf(prefix, sizeof(prefix), "%02d%02d%04d",
+                  std::clamp(matchTier, 0, 99),
+                  std::clamp(kindRank, 0, 99),
+                  std::clamp(relevance, 0, 9999));
+    return prefix;
+}
+
+Json completionItemData(const Json &context,
+                        std::string_view source,
+                        std::string_view kind,
+                        std::string_view label,
+                        std::string_view documentation)
+{
+    Json data{
+        {"source", source},
+        {"baaContext", context.value("kind", "unknown")},
+        {"baaStableKey", std::string(kind) + ":" + std::string(label)}
+    };
+    if (context.contains("call_name") and context["call_name"].is_string())
+        data["baaCall"] = context["call_name"];
+    if (not documentation.empty()) data["documentation"] = documentation;
+    return data;
 }
 
 Json buildCompletionItems(std::string_view text,
                           std::size_t prefixStart,
                           std::size_t cursor,
+                          const Json &context,
                           const Json &metadata,
                           const Json &symbols)
 {
@@ -510,14 +567,19 @@ Json buildCompletionItems(std::string_view text,
             const std::string name = symbol.value(
                 "label", symbol.value("name", ""));
             const std::string kind = symbol.value("kind", "");
-            if (name.empty() or not completionMatches(name, prefix)) continue;
+            const std::string filter = symbol.value("filter_text", name);
+            const int matchTier = completionMatchTier(filter, prefix);
+            if (name.empty() or matchTier < 0) continue;
             if (not seen.insert(name).second) continue;
+            const int relevance = symbol.value("relevance", 50);
             Json item{
                 {"label", name},
                 {"kind", symbolCompletionKind(kind)},
-                {"filterText", symbol.value("filter_text", name)},
+                {"filterText", filter},
                 {"insertTextFormat", 1},
-                {"sortText", "0" + name},
+                {"sortText", completionSortText(
+                    matchTier, completionKindRank(context, kind),
+                    relevance)},
                 {"textEdit", {
                     {"range", replacementRange},
                     {"newText", symbol.value("insert_text", name)}
@@ -529,12 +591,8 @@ Json buildCompletionItems(std::string_view text,
             if (not detail.empty()) item["detail"] = detail;
             const std::string documentation =
                 symbol.value("documentation", "");
-            if (not documentation.empty()) {
-                item["data"] = {
-                    {"source", "baa-compiler"},
-                    {"documentation", documentation}
-                };
-            }
+            item["data"] = completionItemData(
+                context, "baa-compiler", kind, name, documentation);
             result.push_back(std::move(item));
         }
     }
@@ -546,10 +604,12 @@ Json buildCompletionItems(std::string_view text,
             const std::string filter = source.value("filter_text", label);
             const std::string kind = source.value("kind", "keyword");
             const bool isDirective = kind == "directive";
+            const int matchTier = completionMatchTier(filter, prefix);
             if (label.empty() or filter.empty() or isDirective != directiveContext or
-                not completionMatches(filter, prefix)) continue;
+                matchTier < 0) continue;
             const std::string insertion = source.value("insert_text", filter);
             if (not seen.insert(label).second) continue;
+            const int relevance = source.value("relevance", 50);
 
             Json item{
                 {"label", label},
@@ -557,22 +617,26 @@ Json buildCompletionItems(std::string_view text,
                 {"filterText", filter},
                 {"insertTextFormat",
                  source.value("insert_text_format", "plain") == "snippet" ? 2 : 1},
-                {"sortText", (kind == "snippet" ? "2" : "1") + filter},
+                {"sortText", completionSortText(
+                    matchTier, completionKindRank(context, kind),
+                    relevance)},
                 {"textEdit", {{"range", replacementRange}, {"newText", insertion}}}
             };
             const std::string detail = source.value("detail", "");
             if (not detail.empty()) item["detail"] = detail;
             const std::string documentation =
                 source.value("documentation", "");
-            if (not documentation.empty()) {
-                item["data"] = {
-                    {"source", "baa-compiler"},
-                    {"documentation", documentation}
-                };
-            }
+            item["data"] = completionItemData(
+                context, "baa-compiler", kind, label, documentation);
             result.push_back(std::move(item));
         }
     }
+    std::sort(result.begin(), result.end(), [](const Json &left, const Json &right) {
+        const std::string leftSort = left.value("sortText", "");
+        const std::string rightSort = right.value("sortText", "");
+        if (leftSort != rightSort) return leftSort < rightSort;
+        return left.value("label", "") < right.value("label", "");
+    });
     return result;
 }
 
@@ -3121,7 +3185,8 @@ Json BaaLanguageServer::convertSemanticReply(
                 {"isIncomplete", not query.completionComplete},
                 {"items", buildCompletionItems(
                     query.text, prefixStart, cursor,
-                    metadata, query.completionItems)}
+                    query.completionContext, metadata,
+                    query.completionItems)}
             };
         }
         case SemanticReplyKind::Hover:
@@ -3415,6 +3480,7 @@ void BaaLanguageServer::onSemanticFinished(BaaSemanticResult result)
     completed.signatureHelp = std::move(result.signatureHelp);
     completed.definition = std::move(result.definition);
     completed.references = std::move(result.references);
+    completed.completionContext = std::move(result.completionContext);
     completed.completionItems = std::move(result.completionItems);
     completed.completionComplete = result.completionComplete;
     completed.symbol = std::move(result.symbol);
