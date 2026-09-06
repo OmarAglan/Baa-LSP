@@ -22,19 +22,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Baa
-          ref: d5ee0c0df7288669f378be24990623f7f0d0f0b0
+          ref: e330a81539dc23faf778859e73ae0dfc8e816102
           path: ecosystem/Baa
 
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Nazm
-          ref: f7fcf8f6d2bf629daf708b3b6028e22c74683ce6
+          ref: c78c993cfa3523d46d08443599e316a2a1f827ea
           path: ecosystem/Nazm
 
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Takween
-          ref: d6a2c629d8a56d2d75c226820fb7a78810f75eae
+          ref: fa0c4162495267f2679d543bfc55f600719bdd5f
           path: ecosystem/Takween
 
       - uses: actions/setup-python@v5
