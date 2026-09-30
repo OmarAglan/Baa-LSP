@@ -3,4 +3,6 @@
 /.cache/
 *.user
 *.log
+__pycache__/
+
 
