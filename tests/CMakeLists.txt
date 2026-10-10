@@ -52,6 +52,13 @@ add_baa_lsp_runtime_test(
     $<TARGET_FILE:baa-lsp> $<TARGET_FILE:baa_lsp_fake_compiler>
 )
 
+add_baa_lsp_runtime_test(
+    test_log_contract
+    ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestLogContract.py
+    ${PROJECT_SOURCE_DIR}/src/server/BaaLanguageServer.cpp
+    ${PROJECT_SOURCE_DIR}/docs/baa-lsp-log-v1.json
+)
+
 if(WIN32)
     add_baa_lsp_runtime_test(
         test_windows_runtime_independence

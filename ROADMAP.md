@@ -77,6 +77,17 @@
   with monotonic session sequences, sanitized bounded data, standard LSP
   fallback, and no source, path, environment, raw subprocess output, timestamp,
   session identifier, network transport, or `telemetry/event` payload.
+  - [x] Freeze the event set in the installed catalogue
+    [`docs/baa-lsp-log-v1.json`](docs/baa-lsp-log-v1.json): 16 events with
+    their component, severity, fallback message, and integer-only data keys.
+  - [x] `test_log_contract` binds every `sendLogEvent` call site to the
+    catalogue. An uncatalogued event, a catalogued event without a call site,
+    a non-literal event, component, or message, or a string data value fails
+    the build's tests.
+  - [x] `test_project_navigation` requires every `baa/logEvent` sent by the
+    real server with real Baa and Takween to be exactly a catalogued event.
+  - [ ] Cross-check in the ecosystem gate that Qalam presents every catalogued
+    event, then record the Windows/Linux receipt and close the admission.
 - [x] Standalone Windows/Linux install trees and versioned archives with the
   independent Python protocol client running against the installed server.
 - [x] Bundle the admitted server with Qalam on Windows/Linux and publish hosted

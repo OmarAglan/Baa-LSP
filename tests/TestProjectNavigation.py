@@ -5,6 +5,11 @@ import subprocess
 import sys
 import tempfile
 
+LOG_CATALOGUE = (
+    pathlib.Path(__file__).resolve().parents[1] / "docs" / "baa-lsp-log-v1.json"
+)
+LOG_EVENTS = []
+
 
 def send_message(process, message):
     body = json.dumps(
@@ -28,7 +33,32 @@ def read_message(process):
         name, value = line.decode("ascii").split(":", 1)
         headers[name.lower()] = value.strip()
     length = int(headers["content-length"])
-    return json.loads(process.stdout.read(length).decode("utf-8"))
+    message = json.loads(process.stdout.read(length).decode("utf-8"))
+    if message.get("method") == "baa/logEvent":
+        LOG_EVENTS.append(message["params"])
+    return message
+
+
+def check_log_events(required):
+    """Every event the real server sent must be exactly a catalogued one."""
+    catalogue = json.loads(LOG_CATALOGUE.read_text(encoding="utf-8"))
+    by_event = {entry["event"]: entry for entry in catalogue["events"]}
+    previous_sequence = 0
+    for params in LOG_EVENTS:
+        assert set(params) == set(catalogue["fields"]), params
+        assert params["schema_version"] == catalogue["schema"], params
+        assert type(params["sequence"]) is int, params
+        assert params["sequence"] > previous_sequence, params
+        previous_sequence = params["sequence"]
+        entry = by_event.get(params["event"])
+        assert entry is not None, params
+        assert params["component"] == entry["component"], params
+        assert params["severity"] == entry["severity"], params
+        assert params["message"] == entry["message"], params
+        assert set(params["data"]) == set(entry["data"]), params
+        assert all(type(value) is int for value in params["data"].values()), params
+    observed = {params["event"] for params in LOG_EVENTS}
+    assert required <= observed, sorted(observed)
 
 
 def read_response(process, request_id, observed=None):
@@ -553,6 +583,11 @@ def main():
             },
         )
         assert process.wait(timeout=5) == 0
+        check_log_events({
+            "workspace.plan.loaded",
+            "workspace.plan.failed",
+            "workspace.root.removed",
+        })
 
 
 if __name__ == "__main__":

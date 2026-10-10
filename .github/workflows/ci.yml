@@ -116,6 +116,9 @@ jobs:
           $compiler = (Resolve-Path ("build/tests/baa_lsp_fake_compiler" + $suffix)).Path
           python tests/TestStdioProtocol.py $server $compiler
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python tests/TestLogContract.py src/server/BaaLanguageServer.cpp `
+            dist/baa-lsp/share/doc/baa-lsp/baa-lsp-log-v1.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           if ($IsWindows) {
             python tests/TestWindowsRuntime.py $server
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }

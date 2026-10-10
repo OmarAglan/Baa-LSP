@@ -35,7 +35,8 @@ The current server provides:
 - folding and semantic selection ranges;
 - compiler-owned Arabic parameter-name inlay hints;
 - opt-in, telemetry-free structured operational logs for Qalam, with standard
-  `window/logMessage` fallback for other clients; and
+  `window/logMessage` fallback for other clients, limited to the closed event
+  set in [`docs/baa-lsp-log-v1.json`](docs/baa-lsp-log-v1.json); and
 - version checks, cancellation, stale-result rejection, and UTF-8/UTF-16 position conversion.
 
 See the [roadmap](ROADMAP.md) for delivery status and [architecture](docs/ARCHITECTURE_AR.md) for the contract and ownership model.

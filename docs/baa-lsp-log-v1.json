@@ -1,0 +1,150 @@
+{
+  "schema": "baa-lsp-log-v1",
+  "notification": "baa/logEvent",
+  "capability": "experimental.baaLogEvent",
+  "opt_in": "initializationOptions.baaStructuredLogs.schemaVersion",
+  "fallback": "window/logMessage",
+  "transport": "local-stdio",
+  "telemetry": false,
+  "fields": [
+    "schema_version",
+    "sequence",
+    "severity",
+    "component",
+    "event",
+    "message",
+    "data"
+  ],
+  "severities": ["error", "warning", "info", "debug"],
+  "components": ["workspace", "document", "compiler"],
+  "limits": {
+    "identifier_max_chars": 96,
+    "identifier_segment_max_chars": 32,
+    "message_max_utf16_units": 4096,
+    "data_max_entries": 16,
+    "data_key_max_chars": 64,
+    "data_string_max_utf16_units": 512
+  },
+  "never_carried": [
+    "source text",
+    "file paths",
+    "environment values",
+    "raw compiler or Takween output",
+    "timestamps",
+    "session identifiers"
+  ],
+  "events": [
+    {
+      "event": "workspace.root.invalid",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Workspace folder could not be normalized.",
+      "data": {}
+    },
+    {
+      "event": "workspace.root.removed",
+      "component": "workspace",
+      "severity": "info",
+      "message": "A workspace folder was removed.",
+      "data": {}
+    },
+    {
+      "event": "workspace.manifest.missing",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Takween project context was removed because مشروع.تكوين is not present.",
+      "data": {}
+    },
+    {
+      "event": "workspace.plan.unavailable",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Takween is unavailable while loading the project plan.",
+      "data": {}
+    },
+    {
+      "event": "workspace.plan.failed",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Takween failed while loading the project plan.",
+      "data": { "exit_code": "integer" }
+    },
+    {
+      "event": "workspace.plan.invalid",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Takween returned a project plan that does not satisfy takween-build-plan-v1.",
+      "data": {}
+    },
+    {
+      "event": "workspace.plan.empty",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Takween returned a project plan without Baa translation units.",
+      "data": { "source_count": "integer" }
+    },
+    {
+      "event": "workspace.plan.loaded",
+      "component": "workspace",
+      "severity": "info",
+      "message": "Loaded the Takween project plan.",
+      "data": { "source_count": "integer" }
+    },
+    {
+      "event": "workspace.symbol.source-skipped",
+      "component": "workspace",
+      "severity": "warning",
+      "message": "Workspace symbols skipped one Baa source.",
+      "data": {}
+    },
+    {
+      "event": "document.open.rejected",
+      "component": "document",
+      "severity": "error",
+      "message": "A Baa document was rejected while opening.",
+      "data": {}
+    },
+    {
+      "event": "document.change.invalid",
+      "component": "document",
+      "severity": "error",
+      "message": "Document change does not contain valid full text.",
+      "data": {}
+    },
+    {
+      "event": "document.change.rejected",
+      "component": "document",
+      "severity": "warning",
+      "message": "A Baa document change was rejected.",
+      "data": {}
+    },
+    {
+      "event": "document.uri.unsupported",
+      "component": "document",
+      "severity": "error",
+      "message": "This Baa-LSP version supports local file:// documents only.",
+      "data": {}
+    },
+    {
+      "event": "compiler.analysis.failed",
+      "component": "compiler",
+      "severity": "error",
+      "message": "Baa compiler analysis failed.",
+      "data": {}
+    },
+    {
+      "event": "compiler.completion-data.failed",
+      "component": "compiler",
+      "severity": "error",
+      "message": "Baa compiler completion data could not be loaded.",
+      "data": {}
+    },
+    {
+      "event": "compiler.semantic.warning",
+      "component": "compiler",
+      "severity": "warning",
+      "message": "Baa compiler reported a warning while serving a semantic request.",
+      "data": {}
+    }
+  ]
+}
