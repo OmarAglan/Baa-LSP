@@ -86,8 +86,17 @@
     the build's tests.
   - [x] `test_project_navigation` requires every `baa/logEvent` sent by the
     real server with real Baa and Takween to be exactly a catalogued event.
-  - [ ] Cross-check in the ecosystem gate that Qalam presents every catalogued
-    event, then record the Windows/Linux receipt and close the admission.
+  - [x] The ecosystem gate requires Qalam's Arabic presenter and the catalogue
+    to hold the same event set.
+
+**Structured log admission receipt (2026-10-10):** the catalogue, the call-site
+contract test, the real-server check, and the installed-catalogue check passed
+on Windows and Linux in
+[Baa-LSP CI 38052093589](https://github.com/OmarAglan/Baa-LSP/actions/runs/38052093589).
+The Qalam event-set cross-check passed at the pinned combination in
+[Eco run 38056873573](https://github.com/OmarAglan/Eco/actions/runs/38056873573).
+`baa-lsp-log-v1` is admitted for production use: adding, removing, or changing
+an event is a contract change that must update the catalogue and Qalam together.
 - [x] Standalone Windows/Linux install trees and versioned archives with the
   independent Python protocol client running against the installed server.
 - [x] Bundle the admitted server with Qalam on Windows/Linux and publish hosted
