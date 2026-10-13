@@ -22,13 +22,13 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Baa
-          ref: b0d112c6aaf604ee5d14e8550fcb72dfd70f6285
+          ref: f400dc8348f59511d885015d2957072ebf9d296f
           path: ecosystem/Baa
 
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Nazm
-          ref: e40568157cfabd1321e4261aa77afd5f5b3ffb6f
+          ref: 4a4da865e1a58696739faf1414158821995336ab
           path: ecosystem/Nazm
 
       - uses: actions/checkout@v4
