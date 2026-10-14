@@ -41,6 +41,11 @@ def comparable_uri(uri):
 def main():
     server_path = pathlib.Path(sys.argv[1]).resolve()
     compiler_path = pathlib.Path(sys.argv[2]).resolve()
+    if "--frontend=in-process" in sys.argv[3:]:
+        version = subprocess.run(
+            [str(server_path), "--version"], capture_output=True, timeout=10, check=False
+        )
+        assert b"baa-frontend-api-v1" in version.stderr, version.stderr
     source = (
         "صحيح اجمع(صحيح أول، صحيح ثان) { إرجع أول + ثان. }\n"
         "صحيح الرئيسية() {\n"
@@ -53,7 +58,7 @@ def main():
         source_path = pathlib.Path(directory, "مصدر عربي.baa")
         uri = source_path.as_uri()
         process = subprocess.Popen(
-            [str(server_path), "--baa-path", str(compiler_path)],
+            [str(server_path), "--baa-path", str(compiler_path), *sys.argv[3:]],
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,

@@ -19,6 +19,10 @@
 #include <unistd.h>
 #endif
 
+#if defined(BAA_LSP_IN_PROCESS_FRONTEND)
+#include "baa_frontend.h"
+#endif
+
 namespace {
 #if defined(_WIN32)
 std::wstring wideFromUtf8(std::string_view text)
@@ -271,6 +275,75 @@ ProcessResult ProcessRunner::run(const std::string &program,
     errorThread.join();
 
     finishState();
+#endif
+    return result;
+}
+
+bool ProcessRunner::inProcessFrontendAvailable()
+{
+#if defined(BAA_LSP_IN_PROCESS_FRONTEND)
+    return true;
+#else
+    return false;
+#endif
+}
+
+ProcessResult ProcessRunner::runInProcess(const std::string &program,
+                                          const std::vector<std::string> &arguments,
+                                          const std::filesystem::path &workingDirectory,
+                                          std::string_view standardInput)
+{
+    ProcessResult result;
+#if defined(BAA_LSP_IN_PROCESS_FRONTEND)
+    {
+        std::scoped_lock lock(m_mutex);
+        if (m_cancelRequested) {
+            m_cancelRequested = false;
+            result.cancelled = true;
+            return result;
+        }
+    }
+
+    std::vector<const char *> argumentPointers;
+    argumentPointers.reserve(arguments.size());
+    for (const std::string &argument : arguments) argumentPointers.push_back(argument.c_str());
+    const std::u8string encodedDirectory = workingDirectory.u8string();
+    const std::string directory(reinterpret_cast<const char *>(encodedDirectory.data()),
+                                encodedDirectory.size());
+    // The executable only locates the installation (its stdlib). A bare name
+    // that was not found on disk leaves that to the server's own directory.
+    const bool hasDirectory = program.find_first_of("/\\") != std::string::npos;
+
+    BaaFrontendRequest request{};
+    request.executable_path = hasDirectory ? program.c_str() : nullptr;
+    request.working_directory = directory.empty() ? nullptr : directory.c_str();
+    request.arguments = argumentPointers.data();
+    request.argument_count = argumentPointers.size();
+    request.standard_input = standardInput.data();
+    request.standard_input_size = standardInput.size();
+
+    BaaFrontendResult output{};
+    const BaaFrontendStatus status = baa_frontend_run(&request, &output);
+    if (status == BAA_FRONTEND_OK) {
+        result.started = true;
+        result.exitCode = output.exit_code;
+        result.standardOutput.assign(output.standard_output, output.standard_output_size);
+        result.standardError.assign(output.standard_error, output.standard_error_size);
+        baa_frontend_result_free(&output);
+    } else {
+        result.errorMessage = "The in-process Baa frontend could not run the request (status " +
+                              std::to_string(static_cast<int>(status)) + ").";
+    }
+
+    std::scoped_lock lock(m_mutex);
+    result.cancelled = m_cancelRequested;
+    m_cancelRequested = false;
+#else
+    (void)program;
+    (void)arguments;
+    (void)workingDirectory;
+    (void)standardInput;
+    result.errorMessage = "Baa-LSP was built without the in-process Baa frontend.";
 #endif
     return result;
 }

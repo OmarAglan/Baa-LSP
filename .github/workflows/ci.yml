@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Baa
-          ref: 5c173014463d0af40943e6b6556ae1e08fe3c9ca
+          ref: 8c6cbcf105701b9bfcbcd2e92e31c2e3b6b0ef75
           path: ecosystem/Baa
 
       - uses: actions/checkout@v4
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: OmarAglan/Takween
-          ref: fa0c4162495267f2679d543bfc55f600719bdd5f
+          ref: a77404cd180a7dc4922d82c3d2ecc1aa44df0f63
           path: ecosystem/Takween
 
       - uses: actions/setup-python@v5
@@ -61,7 +61,7 @@ jobs:
         shell: pwsh
         run: |
           $generator = if ($IsWindows) { @('-G', 'MinGW Makefiles') } else { @() }
-          cmake -S ecosystem/Baa -B ecosystem/Baa/build -DCMAKE_BUILD_TYPE=Release @generator
+          cmake -S ecosystem/Baa -B ecosystem/Baa/build -DCMAKE_BUILD_TYPE=Release -DBAA_BUILD_FRONTEND_LIBRARY=ON @generator
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cmake -S ecosystem/Nazm -B ecosystem/Nazm/build -DCMAKE_BUILD_TYPE=Release @generator
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
@@ -92,12 +92,14 @@ jobs:
           $suffix = if ($IsWindows) { '.exe' } else { '' }
           $baa = (Resolve-Path ("ecosystem/Baa/build/baa" + $suffix)).Path
           $takween = (Resolve-Path ("ecosystem/Takween/dist/bin/takween" + $suffix)).Path
+          $frontend = (Resolve-Path 'ecosystem/Baa/build').Path
           $generator = if ($IsWindows) { @('-G', 'MinGW Makefiles') } else { @() }
           cmake -S . -B build `
             -DBAA_LSP_BUILD_TESTS=ON `
             -DCMAKE_BUILD_TYPE=Release `
             "-DBAA_LSP_BAA_EXECUTABLE=$baa" `
             "-DBAA_LSP_TAKWEEN_EXECUTABLE=$takween" `
+            "-DBAA_LSP_BAA_FRONTEND_DIR=$frontend" `
             @generator
 
       - name: Build

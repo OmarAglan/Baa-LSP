@@ -58,8 +58,12 @@
   `textDocumentSync` and applies ranged UTF-16 changes to its own copy in
   order. A rejected range leaves the text unchanged and accepts only a
   full-text change until the client resynchronizes. Baa still analyses the
-  whole overlay in a separate process; an in-process frontend API remains
-  future work.
+  whole overlay on every change.
+- [x] In-process Baa frontend: built with `BAA_LSP_BAA_FRONTEND_DIR`, the
+  server links Baa's `baa-frontend-api-v1` library and runs every Baa request
+  inside its own process, with output identical to the executable. An explicit
+  compiler still wins in `--frontend=auto`; CI runs the real-compiler session
+  through both paths on Windows and Linux.
 - [x] Cancellation across LSP, Baa-LSP, and Baa analysis, with active compiler
   process termination and immediate worker recovery proven on Windows/Linux.
 - [x] Workspace folders and Takween project context.

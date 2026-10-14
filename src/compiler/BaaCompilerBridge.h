@@ -16,6 +16,17 @@
 #include <unordered_map>
 #include <vector>
 
+// How the bridge reaches Baa. Automatic runs the linked frontend in process
+// unless a compiler was configured explicitly (--baa-path or BAA), which then
+// wins; Process always starts the executable; InProcess always uses the linked
+// frontend and keeps a configured compiler only to locate the installation.
+enum class BaaFrontendMode
+{
+    Automatic,
+    Process,
+    InProcess,
+};
+
 struct BaaAnalysisRequest
 {
     std::string uri;
@@ -244,6 +255,7 @@ public:
 
     void setCompilerProgram(std::string program);
     void setApplicationDirectory(std::filesystem::path directory);
+    void setFrontendMode(BaaFrontendMode mode);
     void setDebounceInterval(int milliseconds);
     void setAnalysisCallback(AnalysisCallback callback);
     void setSymbolCallback(SymbolCallback callback);
@@ -272,12 +284,19 @@ public:
 
 private:
     std::string resolveCompilerProgram() const;
+    bool useInProcessFrontend() const;
+    ProcessResult runCompiler(bool inProcess,
+                              const std::string &compiler,
+                              const std::vector<std::string> &arguments,
+                              const std::filesystem::path &workingDirectory,
+                              std::string_view standardInput);
     void workerLoop();
 
     mutable std::mutex m_mutex;
     std::condition_variable m_wake;
     std::string m_compilerProgram;
     std::filesystem::path m_applicationDirectory;
+    BaaFrontendMode m_frontendMode{BaaFrontendMode::Automatic};
     std::chrono::milliseconds m_debounce{250};
     std::unordered_map<std::string, BaaAnalysisRequest> m_pending;
     std::deque<BaaSymbolRequest> m_pendingSymbols;

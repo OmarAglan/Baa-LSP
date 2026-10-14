@@ -72,7 +72,17 @@ if(BAA_LSP_BAA_EXECUTABLE)
     add_baa_lsp_runtime_test(
         test_real_baa_protocol
         ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestRealBaaProtocol.py
-        $<TARGET_FILE:baa-lsp> ${BAA_LSP_BAA_EXECUTABLE}
+        $<TARGET_FILE:baa-lsp> ${BAA_LSP_BAA_EXECUTABLE} --frontend=process
+    )
+endif()
+
+if(BAA_LSP_BAA_EXECUTABLE AND BAA_LSP_BAA_FRONTEND_DIR)
+    # The same session through the linked frontend; the compiler path only
+    # locates the installation.
+    add_baa_lsp_runtime_test(
+        test_real_baa_protocol_in_process
+        ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/TestRealBaaProtocol.py
+        $<TARGET_FILE:baa-lsp> ${BAA_LSP_BAA_EXECUTABLE} --frontend=in-process
     )
 endif()
 

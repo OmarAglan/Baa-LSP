@@ -24,6 +24,7 @@ public:
     void setCompilerProgram(std::string program);
     void setTakweenProgram(std::string program);
     void setApplicationDirectory(std::filesystem::path directory);
+    void setFrontendMode(BaaFrontendMode mode);
     void setAnalysisDebounceInterval(int milliseconds);
     void setMessageCallback(MessageCallback callback);
     void setExitCallback(ExitCallback callback);

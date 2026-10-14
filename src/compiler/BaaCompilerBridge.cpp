@@ -794,6 +794,40 @@ void BaaCompilerBridge::cancelAll()
     m_wake.notify_one();
 }
 
+void BaaCompilerBridge::setFrontendMode(BaaFrontendMode mode)
+{
+    std::scoped_lock lock(m_mutex);
+    m_frontendMode = mode;
+}
+
+bool BaaCompilerBridge::useInProcessFrontend() const
+{
+    if (not ProcessRunner::inProcessFrontendAvailable()) return false;
+    BaaFrontendMode mode;
+    std::string configured;
+    {
+        std::scoped_lock lock(m_mutex);
+        mode = m_frontendMode;
+        configured = m_compilerProgram;
+    }
+    if (mode != BaaFrontendMode::Automatic) return mode == BaaFrontendMode::InProcess;
+    if (not configured.empty()) return false;
+    const char *environment = std::getenv("BAA");
+    return environment == nullptr or trimmed(environment).empty();
+}
+
+ProcessResult BaaCompilerBridge::runCompiler(bool inProcess,
+                                             const std::string &compiler,
+                                             const std::vector<std::string> &arguments,
+                                             const std::filesystem::path &workingDirectory,
+                                             std::string_view standardInput)
+{
+    if (inProcess) {
+        return m_runner.runInProcess(compiler, arguments, workingDirectory, standardInput);
+    }
+    return m_runner.run(compiler, arguments, workingDirectory, standardInput);
+}
+
 std::string BaaCompilerBridge::resolveCompilerProgram() const
 {
     std::string configured;
@@ -970,9 +1004,10 @@ void BaaCompilerBridge::workerLoop()
         }
 
         const std::string compiler = resolveCompilerProgram();
+        const bool inProcess = useInProcessFrontend();
         if (isCompletionDataRequest) {
-            ProcessResult process = m_runner.run(
-                compiler, {"--completion-data=json"}, {}, {});
+            ProcessResult process = runCompiler(
+                inProcess, compiler, {"--completion-data=json"}, {}, {});
             BaaCompletionDataResult result;
             result.exitCode = process.exitCode;
             if (not process.started) {
@@ -1078,8 +1113,8 @@ void BaaCompilerBridge::workerLoop()
                   not tokenRequest.projectWorkingDirectory.empty()
                     ? tokenRequest.projectWorkingDirectory
                     : sourcePath.parent_path();
-        ProcessResult process = m_runner.run(
-            compiler, arguments, workingDirectory, text);
+        ProcessResult process = runCompiler(
+            inProcess, compiler, arguments, workingDirectory, text);
 
         if (isInlayHintRequest) {
             BaaInlayHintResult result;
@@ -1258,8 +1293,8 @@ void BaaCompilerBridge::workerLoop()
                     }
                     indexArguments.push_back(
                         "--source-stdin=" + tokenRequest.filePath);
-                    ProcessResult indexProcess = m_runner.run(
-                        compiler, indexArguments, workingDirectory,
+                    ProcessResult indexProcess = runCompiler(
+                        inProcess, compiler, indexArguments, workingDirectory,
                         tokenRequest.text);
                     if (indexProcess.cancelled) {
                         process.cancelled = true;
@@ -1508,8 +1543,8 @@ void BaaCompilerBridge::workerLoop()
                         not semanticRequest.projectWorkingDirectory.empty()
                             ? semanticRequest.projectWorkingDirectory
                             : projectPath.parent_path();
-                    ProcessResult indexProcess = m_runner.run(
-                        compiler,
+                    ProcessResult indexProcess = runCompiler(
+                        inProcess, compiler,
                         indexArguments,
                         indexWorkingDirectory,
                         projectSource.useStandardInput

@@ -92,6 +92,23 @@ baa-lsp --baa-path <path-to-baa> --takween-path <path-to-takween>
 
 If `--baa-path` is omitted, the server also checks the `BAA` environment variable and then `PATH`. LSP messages use `Content-Length` framing over standard input and output, so ordinary log text must never be written to stdout.
 
+### In-process Baa frontend
+
+Configure with `-DBAA_LSP_BAA_FRONTEND_DIR=<baa-build>`, a Baa build tree
+configured with `-DBAA_BUILD_FRONTEND_LIBRARY=ON`, to link Baa's frontend
+(`baa-frontend-api-v1`) into the server. Checks, symbols, tokens, structure,
+inlay hints, formatting and semantic queries then run inside the server instead
+of starting `baa` for each request, with the same output byte for byte.
+`baa-lsp --version` names the contract when it is linked.
+
+`--frontend=auto|process|in-process` selects the path. `auto`, the default,
+uses the linked frontend unless a compiler is configured explicitly with
+`--baa-path` or `BAA`; that compiler then wins, as an explicit Nazm executable
+wins over Baa's embedded assembler. `process` always starts the executable.
+`in-process` always uses the linked frontend and keeps the configured compiler
+only to locate the installation's `stdlib/`. A running in-process call cannot
+be interrupted: cancellation discards its result when it returns.
+
 The canonical document extensions are `.باء` for source and `.رأسباء` for
 headers. `.baa` and `.baahd` remain accepted for existing projects.
 

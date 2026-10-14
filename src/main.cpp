@@ -18,11 +18,33 @@ int runServer(const std::vector<std::string> &arguments,
 {
     std::string compilerProgram;
     std::string takweenProgram;
+    BaaFrontendMode frontendMode = BaaFrontendMode::Automatic;
     for (std::size_t index = 1; index < arguments.size(); ++index) {
         const std::string &argument = arguments[index];
         if (argument == "--version") {
             std::cerr << "Baa-LSP 0.1.0\n";
+            if (ProcessRunner::inProcessFrontendAvailable()) {
+                std::cerr << "In-process Baa frontend: baa-frontend-api-v1\n";
+            }
             return 0;
+        }
+        if (argument.starts_with("--frontend=")) {
+            const std::string mode = argument.substr(std::string("--frontend=").size());
+            if (mode == "auto") {
+                frontendMode = BaaFrontendMode::Automatic;
+            } else if (mode == "process") {
+                frontendMode = BaaFrontendMode::Process;
+            } else if (mode == "in-process" and ProcessRunner::inProcessFrontendAvailable()) {
+                frontendMode = BaaFrontendMode::InProcess;
+            } else if (mode == "in-process") {
+                std::cerr << "Baa-LSP was built without the in-process Baa frontend.\n";
+                return 2;
+            } else {
+                std::cerr << "Unknown --frontend mode: " << mode
+                          << " (expected auto, process or in-process).\n";
+                return 2;
+            }
+            continue;
         }
         if (argument == "--baa-path" and index + 1 < arguments.size()) {
             compilerProgram = arguments[++index];
@@ -41,6 +63,7 @@ int runServer(const std::vector<std::string> &arguments,
     server.setCompilerProgram(std::move(compilerProgram));
     server.setTakweenProgram(std::move(takweenProgram));
     server.setApplicationDirectory(std::filesystem::absolute(executablePath).parent_path());
+    server.setFrontendMode(frontendMode);
 
     std::atomic_int exitCode{0};
     transport.setMessageCallback(

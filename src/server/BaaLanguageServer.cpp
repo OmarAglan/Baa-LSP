@@ -868,6 +868,11 @@ void BaaLanguageServer::setApplicationDirectory(std::filesystem::path directory)
     m_compiler.setApplicationDirectory(std::move(directory));
 }
 
+void BaaLanguageServer::setFrontendMode(BaaFrontendMode mode)
+{
+    m_compiler.setFrontendMode(mode);
+}
+
 void BaaLanguageServer::setAnalysisDebounceInterval(int milliseconds)
 {
     m_compiler.setDebounceInterval(milliseconds);

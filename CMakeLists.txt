@@ -27,6 +27,8 @@ set(BAA_LSP_BAA_EXECUTABLE "" CACHE FILEPATH
     "Optional Baa compiler used by the real compiler/LSP integration test")
 set(BAA_LSP_TAKWEEN_EXECUTABLE "" CACHE FILEPATH
     "Optional Takween executable used by the project navigation integration test")
+set(BAA_LSP_BAA_FRONTEND_DIR "" CACHE PATH
+    "Optional Baa build directory configured with -DBAA_BUILD_FRONTEND_LIBRARY=ON; links Baa's frontend into the server")
 
 add_library(baa_lsp_core STATIC
     src/compiler/BaaCompilerBridge.cpp
@@ -47,6 +49,22 @@ add_library(baa_lsp_core STATIC
 target_include_directories(baa_lsp_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
 target_link_libraries(baa_lsp_core PUBLIC nlohmann_json::nlohmann_json Threads::Threads)
 baa_lsp_harden_windows_runtime(baa_lsp_core)
+
+# baa-frontend-api-v1: run Baa's checking and query modes inside the server
+# instead of starting baa for every request.
+if(BAA_LSP_BAA_FRONTEND_DIR)
+    set(baa_lsp_frontend_targets "${BAA_LSP_BAA_FRONTEND_DIR}/BaaFrontendTargets.cmake")
+    if(NOT EXISTS "${baa_lsp_frontend_targets}")
+        message(FATAL_ERROR
+            "BAA_LSP_BAA_FRONTEND_DIR has no BaaFrontendTargets.cmake; "
+            "configure Baa with -DBAA_BUILD_FRONTEND_LIBRARY=ON")
+    endif()
+    enable_language(C)
+    include("${baa_lsp_frontend_targets}")
+    target_link_libraries(baa_lsp_core PUBLIC Baa::baa_frontend)
+    target_compile_definitions(baa_lsp_core PUBLIC BAA_LSP_IN_PROCESS_FRONTEND=1)
+    message(STATUS "Baa-LSP: in-process Baa frontend from ${BAA_LSP_BAA_FRONTEND_DIR}")
+endif()
 
 add_executable(baa-lsp
     src/main.cpp
