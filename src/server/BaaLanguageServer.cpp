@@ -71,6 +71,41 @@ Json objectValue(const Json &object, std::string_view key)
     return it != object.end() and it->is_object() ? *it : Json::object();
 }
 
+bool documentPositionValue(const Json &value, DocumentPosition *result)
+{
+    return value.is_object() and value.contains("line") and
+        value.contains("character") and
+        nonnegativeIntValue(value["line"], &result->line) and
+        nonnegativeIntValue(value["character"], &result->character);
+}
+
+// Reads contentChanges as full-text or ranged changes. Any malformed entry
+// rejects the whole notification, so no part of it is applied.
+bool documentChangesValue(const Json &params, std::vector<DocumentChange> *result)
+{
+    const auto changes = params.find("contentChanges");
+    if (changes == params.end() or not changes->is_array() or changes->empty())
+        return false;
+    for (const Json &item : *changes) {
+        if (not item.is_object() or not item.contains("text") or
+            not item["text"].is_string())
+            return false;
+        DocumentChange change;
+        change.text = item["text"].get<std::string>();
+        if (item.contains("range")) {
+            const Json &range = item["range"];
+            if (not range.is_object() or not range.contains("start") or
+                not range.contains("end") or
+                not documentPositionValue(range["start"], &change.start) or
+                not documentPositionValue(range["end"], &change.end))
+                return false;
+            change.hasRange = true;
+        }
+        result->push_back(std::move(change));
+    }
+    return true;
+}
+
 int hexDigit(char character)
 {
     if (character >= '0' and character <= '9') return character - '0';
@@ -1176,7 +1211,7 @@ void BaaLanguageServer::handleRequest(const Json &message)
                 {"positionEncoding", "utf-16"},
                 {"textDocumentSync", {
                     {"openClose", true},
-                    {"change", 1},
+                    {"change", 2},
                     {"save", {{"includeText", false}}}
                 }},
                 {"documentSymbolProvider", true},
@@ -1493,12 +1528,10 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     const Json item = objectValue(params, "textDocument");
     const std::string uri = stringValue(item, "uri");
     const int version = intValue(item, "version");
-    const auto changes = params.find("contentChanges");
-    if (changes == params.end() or not changes->is_array() or changes->empty() or
-        not changes->front().is_object() or not changes->front().contains("text") or
-        not changes->front()["text"].is_string()) {
+    std::vector<DocumentChange> changes;
+    if (not documentChangesValue(params, &changes)) {
         sendLogEvent("document.change.invalid", "document",
-                     "Document change does not contain valid full text.");
+                     "Document change is not valid full or ranged text.");
         return;
     }
 
@@ -1506,8 +1539,7 @@ void BaaLanguageServer::handleDidChange(const Json &params)
     BaaDocument document;
     {
         std::scoped_lock lock(m_documentsMutex);
-        if (not m_documents.change(uri, version, changes->front()["text"].get<std::string>(),
-                                   &error)) {
+        if (not m_documents.applyChanges(uri, version, changes, &error)) {
             sendLogEvent("document.change.rejected", "document",
                          "A Baa document change was rejected.", 2);
             return;

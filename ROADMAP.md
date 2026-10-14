@@ -54,7 +54,12 @@
 
 ## 0.4 — Production admission
 
-- [ ] Incremental document overlays or an in-process Baa frontend API.
+- [x] Incremental document overlays: the server advertises incremental
+  `textDocumentSync` and applies ranged UTF-16 changes to its own copy in
+  order. A rejected range leaves the text unchanged and accepts only a
+  full-text change until the client resynchronizes. Baa still analyses the
+  whole overlay in a separate process; an in-process frontend API remains
+  future work.
 - [x] Cancellation across LSP, Baa-LSP, and Baa analysis, with active compiler
   process termination and immediate worker recovery proven on Windows/Linux.
 - [x] Workspace folders and Takween project context.

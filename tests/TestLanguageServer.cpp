@@ -66,7 +66,7 @@ int main()
     CHECK(initialize != nullptr);
     const Json &capabilities = (*initialize)["result"]["capabilities"];
     CHECK(capabilities["positionEncoding"] == "utf-16");
-    CHECK(capabilities.contains("textDocumentSync"));
+    CHECK(capabilities["textDocumentSync"]["change"] == 2);
     CHECK(capabilities["documentSymbolProvider"] == true);
     CHECK(capabilities["foldingRangeProvider"] == true);
     CHECK(capabilities["selectionRangeProvider"] == true);

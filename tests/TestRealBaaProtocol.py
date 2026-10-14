@@ -409,17 +409,65 @@ def main():
             "newText": ".",
         }]
 
-        messy_source = "صحيح الرئيسية(){إرجع ٠.}\n"
+        # Apply the compiler's own fix as a ranged change: the server must
+        # splice it into its copy of the document, not expect the full text.
         send_message(process, {
             "jsonrpc": "2.0", "method": "textDocument/didChange",
             "params": {
                 "textDocument": {"uri": uri, "version": 4},
+                "contentChanges": [{
+                    "range": document_change["edits"][0]["range"],
+                    "text": document_change["edits"][0]["newText"],
+                }],
+            },
+        })
+        incremental_diagnostics = read_message(process)
+        assert incremental_diagnostics["method"] == "textDocument/publishDiagnostics"
+        assert incremental_diagnostics["params"]["version"] == 4
+        assert incremental_diagnostics["params"]["diagnostics"] == []
+
+        # Replace the Arabic digit after the 9 UTF-16 units of "    إرجع ".
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 5},
+                "contentChanges": [{
+                    "range": {
+                        "start": {"line": 1, "character": 9},
+                        "end": {"line": 1, "character": 10},
+                    },
+                    "text": "١",
+                }],
+            },
+        })
+        assert read_message(process)["params"]["version"] == 5
+        send_message(process, {
+            "jsonrpc": "2.0", "id": 13,
+            "method": "textDocument/formatting",
+            "params": {
+                "textDocument": {"uri": uri},
+                "options": {"tabSize": 4, "insertSpaces": True},
+            },
+        })
+        assert read_response(process, 13)["result"] == [{
+            "range": {
+                "start": {"line": 0, "character": 0},
+                "end": {"line": 3, "character": 0},
+            },
+            "newText": "صحيح الرئيسية() {\n    إرجع ١.\n}\n",
+        }]
+
+        messy_source = "صحيح الرئيسية(){إرجع ٠.}\n"
+        send_message(process, {
+            "jsonrpc": "2.0", "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {"uri": uri, "version": 6},
                 "contentChanges": [{"text": messy_source}],
             },
         })
         formatted_diagnostics = read_message(process)
         assert formatted_diagnostics["method"] == "textDocument/publishDiagnostics"
-        assert formatted_diagnostics["params"]["version"] == 4
+        assert formatted_diagnostics["params"]["version"] == 6
         assert formatted_diagnostics["params"]["diagnostics"] == []
 
         send_message(process, {
@@ -448,13 +496,13 @@ def main():
         send_message(process, {
             "jsonrpc": "2.0", "method": "textDocument/didChange",
             "params": {
-                "textDocument": {"uri": uri, "version": 5},
+                "textDocument": {"uri": uri, "version": 7},
                 "contentChanges": [{"text": unterminated_string_source}],
             },
         })
         lexical_diagnostics = read_message(process)
         assert lexical_diagnostics["method"] == "textDocument/publishDiagnostics"
-        assert lexical_diagnostics["params"]["version"] == 5
+        assert lexical_diagnostics["params"]["version"] == 7
         assert len(lexical_diagnostics["params"]["diagnostics"]) == 1
         lexical_diagnostic = lexical_diagnostics["params"]["diagnostics"][0]
         assert lexical_diagnostic["code"] == "B0001"

@@ -108,7 +108,7 @@
       "event": "document.change.invalid",
       "component": "document",
       "severity": "error",
-      "message": "Document change does not contain valid full text.",
+      "message": "Document change is not valid full or ranged text.",
       "data": {}
     },
     {
